@@ -1,11 +1,23 @@
 use std::fmt::Debug;
 
-pub trait Payload: Debug {
+pub trait Key {
+    fn key(&self) -> ValueId;
+}
+
+pub trait Payload: Debug + Key {
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Value(u64);
-impl Payload for Value {}
+
+impl Key for Value {
+    fn key(&self) -> ValueId {
+        self.0.to_string()
+    }
+}
+
+impl Payload for Value {
+}
 
 pub struct Uncommitted;
 pub struct Committed;

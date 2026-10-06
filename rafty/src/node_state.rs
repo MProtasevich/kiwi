@@ -1,28 +1,22 @@
-use crate::payload::{Vault, Payload, Value};
+use crate::payload::{Payload, Value, Vault};
+use crate::remote_node::RemoteNode;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 
+#[derive(Debug, Default)]
 pub struct Follower {
-    leader_id: InstanceId,
+    leader_id: Option<InstanceId>,
+}
+
+impl Follower {
+    fn new(leader_id: InstanceId) -> Self {
+        Self { leader_id: Some(leader_id) }
+    }
 }
 pub struct Candidate;
 pub struct Leader;
 
-pub struct RemoteNode {
-    client: (),
-}
-
 pub type InstanceId = String;
-
-impl RemoteNode {
-    pub fn call_for_vote(&self) {
-        todo!()
-    }
-
-    pub fn vote_for(&self, id: &InstanceId) {
-        todo!()
-    }
-}
 
 pub struct Node<State> {
     cluster_nodes: HashMap<InstanceId, RemoteNode>,
@@ -31,16 +25,12 @@ pub struct Node<State> {
 }
 
 impl<T> Node<T> {
-    pub fn new(cluster_nodes: HashMap<InstanceId, RemoteNode>, leader_id: InstanceId) -> Node<Follower> {
+    pub fn new(cluster_nodes: HashMap<InstanceId, RemoteNode>) -> Node<Follower> {
         Node {
             cluster_nodes,
             value: Vault::new(Box::new(Value::default())),
-            state: Follower { leader_id },
+            state: Follower::default(),
         }
-    }
-
-    pub fn into_follower(self, leader_id: InstanceId) -> Node<Follower> {
-        self.into(Follower { leader_id })
     }
 
     fn into<State>(self, state: State) -> Node<State> {
@@ -58,7 +48,7 @@ impl Node<Follower> {
     }
 
     pub fn set_leader(&mut self, leader_id: InstanceId) {
-        self.state.leader_id = leader_id;
+        self.state.leader_id = Some(leader_id);
     }
 
     pub fn accept(&mut self, payload: impl Payload + 'static) -> Result<()> {
@@ -77,15 +67,15 @@ impl Node<Follower> {
             .vote_for(leader);
         Ok(())
     }
-
-    pub fn pong(&self, leader: &Node<Leader>) -> Result<()> {
-        unimplemented!()
-    }
 }
 
 impl Node<Candidate> {
     pub fn into_leader(self) -> Node<Leader> {
         self.into(Leader)
+    }
+
+    pub fn into_follower(self, leader_id: InstanceId) -> Node<Follower> {
+        self.into(Follower::new(leader_id))
     }
 
     pub fn start_election(&self) -> Result<()> {
@@ -97,6 +87,10 @@ impl Node<Candidate> {
 }
 
 impl Node<Leader> {
+    pub fn into_follower(self, leader_id: InstanceId) -> Node<Follower> {
+        self.into(Follower::new(leader_id))
+    }
+
     pub fn push(&mut self, payload: impl Payload + 'static) -> Result<()> {
         self.value = Vault::new(Box::new(payload));
         Ok(())
@@ -106,6 +100,7 @@ impl Node<Leader> {
         self.value.commit();
         Ok(())
     }
+}
 
     pub fn ping(&self, followers: &[Node<Follower>]) -> Result<()> {
         unimplemented!()
