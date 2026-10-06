@@ -1,5 +1,6 @@
-pub mod raft;
+pub mod node_state;
 mod payload;
+pub mod remote_node;
 
 #[cfg(test)]
 mod tests {
