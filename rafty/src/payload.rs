@@ -26,14 +26,14 @@ pub enum State {
 }
 
 #[derive(Debug)]
-pub struct Container {
+pub struct Vault {
     pub command: Command,
     pub state: State,
 }
 
-impl Container {
-    pub fn new(value: Box<dyn Payload>) -> Container {
-        Container { command: Command::Set(value), state: State::Uncommitted }
+impl Vault {
+    pub fn new(value: Box<dyn Payload>) -> Vault {
+        Vault { command: Command::Set(value), state: State::Uncommitted }
     }
 
     pub fn commit(&mut self) {
