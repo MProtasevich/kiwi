@@ -1,9 +1,10 @@
-use crate::payload::{Container, Payload, Value};
+use crate::payload::{Vault, Payload, Value};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::marker::PhantomData;
 
-pub struct Follower;
+pub struct Follower {
+    leader_id: InstanceId,
+}
 pub struct Candidate;
 pub struct Leader;
 
@@ -25,47 +26,43 @@ impl RemoteNode {
 
 pub struct Node<State> {
     cluster_nodes: HashMap<InstanceId, RemoteNode>,
-    leader: Option<InstanceId>,
-    value: Container,
-    state: PhantomData<State>,
+    value: Vault,
+    state: State,
 }
 
 impl<T> Node<T> {
     pub fn new(cluster_nodes: HashMap<InstanceId, RemoteNode>, leader_id: InstanceId) -> Node<Follower> {
         Node {
             cluster_nodes,
-            leader: Some(leader_id),
-            value: Container::new(Box::new(Value::default())),
-            state: PhantomData
+            value: Vault::new(Box::new(Value::default())),
+            state: Follower { leader_id },
         }
     }
 
     pub fn into_follower(self, leader_id: InstanceId) -> Node<Follower> {
+        self.into(Follower { leader_id })
+    }
+
+    fn into<State>(self, state: State) -> Node<State> {
         Node {
             cluster_nodes: self.cluster_nodes,
-            leader: Some(leader_id),
             value: self.value,
-            state: PhantomData
+            state,
         }
     }
 }
 
 impl Node<Follower> {
     pub fn into_candidate(self) -> Node<Candidate> {
-        Node {
-            cluster_nodes: self.cluster_nodes,
-            leader: None,
-            value: self.value,
-            state: PhantomData
-        }
+        self.into(Candidate)
     }
 
-    pub fn set_leader(&mut self, leader: InstanceId) {
-        self.leader = Some(leader);
+    pub fn set_leader(&mut self, leader_id: InstanceId) {
+        self.state.leader_id = leader_id;
     }
 
     pub fn accept(&mut self, payload: impl Payload + 'static) -> Result<()> {
-        self.value = Container::new(Box::new(payload));
+        self.value = Vault::new(Box::new(payload));
         Ok(())
     }
 
@@ -88,12 +85,7 @@ impl Node<Follower> {
 
 impl Node<Candidate> {
     pub fn into_leader(self) -> Node<Leader> {
-        Node {
-            cluster_nodes: self.cluster_nodes,
-            leader: None,
-            value: self.value,
-            state: PhantomData
-        }
+        self.into(Leader)
     }
 
     pub fn start_election(&self) -> Result<()> {
@@ -106,7 +98,7 @@ impl Node<Candidate> {
 
 impl Node<Leader> {
     pub fn push(&mut self, payload: impl Payload + 'static) -> Result<()> {
-        self.value = Container::new(Box::new(payload));
+        self.value = Vault::new(Box::new(payload));
         Ok(())
     }
 
