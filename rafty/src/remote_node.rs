@@ -1,28 +1,27 @@
+use std::fmt::Debug;
 use crate::payload::{Key, Payload};
 use std::sync::Arc;
 
 type InstanceId = str;
 
-pub trait CandidateClient {
-    /* Candidate */
+pub trait CandidateClient: Debug + Send + Sync {
     fn call_for_vote(&self, instance_id: &InstanceId);
 }
 
-pub trait FollowerClient {
-    /* Follower */
+pub trait FollowerClient: Debug + Send + Sync {
     fn vote_for(&self, instance_id: &InstanceId);
     fn ack(&self, key: &dyn Key);
     fn ack_commit(&self, key: &dyn Key);
     fn heartbeat(&self);
 }
 
-pub trait LeaderClient {
-    /* Leader */
+pub trait LeaderClient: Debug + Send + Sync {
     fn send_payload(&self, payload: Box<dyn Payload>);
     fn commit(&self, key: &dyn Key);
     fn heartbeat(&self);
 }
 
+#[derive(Debug)]
 pub struct RemoteNode {
     candidate_client: Arc<dyn CandidateClient>,
     follower_client: Arc<dyn FollowerClient>,

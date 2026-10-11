@@ -1,6 +1,9 @@
 use std::fmt::Debug;
+use std::sync::Arc;
 
-pub trait Key {
+pub type ValueId = Arc<str>;
+
+pub trait Key: Send + Sync {
     fn key(&self) -> ValueId;
 }
 
@@ -12,7 +15,7 @@ pub(crate) struct Value(u64);
 
 impl Key for Value {
     fn key(&self) -> ValueId {
-        self.0.to_string()
+        Arc::from(self.0.to_string())
     }
 }
 
@@ -22,8 +25,6 @@ impl Payload for Value {
 pub struct Uncommitted;
 pub struct Committed;
 
-pub type ValueId = String;
-
 #[derive(Debug)]
 pub enum Command {
     Set(Box<dyn Payload>),
@@ -32,24 +33,24 @@ pub enum Command {
 }
 
 #[derive(Debug)]
-pub enum State {
+pub enum PersistenceState {
     Committed,
     Uncommitted,
 }
 
 #[derive(Debug)]
-pub struct Vault {
+pub struct Log {
     pub command: Command,
-    pub state: State,
+    pub state: PersistenceState,
 }
 
-impl Vault {
-    pub fn new(value: Box<dyn Payload>) -> Vault {
-        Vault { command: Command::Set(value), state: State::Uncommitted }
+impl Log {
+    pub fn new(value: Box<dyn Payload>) -> Log {
+        Log { command: Command::Set(value), state: PersistenceState::Uncommitted }
     }
 
     pub fn commit(&mut self) {
-        self.state = State::Committed;
+        self.state = PersistenceState::Committed;
     }
 }
 
