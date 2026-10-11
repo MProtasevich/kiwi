@@ -2,9 +2,10 @@ use crate::payload::{Payload, Value, Log};
 use crate::remote_node::RemoteNode;
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::sync::Arc;
 
-pub trait NodeState {
+pub trait NodeState: Debug {
 }
 
 #[derive(Debug, Clone, Default)]
@@ -35,27 +36,33 @@ pub enum Node {
 }
 
 macro_rules! impl_try_from_node {
-    ($enum_type:ident => { $($variant:ident($nested_type:ty)),* $(,)? }) => {
+    ($enum_type:ident => { $($fn_name:tt => $variant:ident($nested_type:ty)),* $(,)? }) => {
         $(
-            impl TryFrom<&$enum_type> for $nested_type {
-                type Error = anyhow::Error;
-
-                fn try_from(from: &$enum_type) -> Result<Self> {
-                    match from {
-                        $enum_type::$variant(state) => Ok(state.clone()),
-                        _ => Err(anyhow!("invalid node state: {from:?}. Expected: {:?}", stringify!($variant))),
-                    }
+            pub fn $fn_name (&self) -> Result<$nested_type> {
+                match self {
+                    $enum_type::$variant(state) => Ok(state.clone()),
+                    _ => Err(anyhow!("invalid node state: {:?}. Expected: {:?}", self.state(), stringify!($variant))),
                 }
             }
         )*
     };
 }
 
-impl_try_from_node!(Node => {
-    Follower(NodeStateMachine<Follower>),
-    Candidate(NodeStateMachine<Candidate>),
-    Leader(NodeStateMachine<Leader>),
-});
+impl Node {
+    fn state(&self) -> &dyn NodeState {
+        match self {
+            Node::Follower(state) => &state.state,
+            Node::Candidate(state) => &state.state,
+            Node::Leader(state) => &state.state,
+        }
+    }
+
+    impl_try_from_node!(Node => {
+        try_follower => Follower(NodeStateMachine<Follower>),
+        try_candidate => Candidate(NodeStateMachine<Candidate>),
+        try_leader => Leader(NodeStateMachine<Leader>),
+    });
+}
 
 pub type InstanceId = Arc<str>;
 
