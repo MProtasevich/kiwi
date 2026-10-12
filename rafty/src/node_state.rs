@@ -1,7 +1,7 @@
-use crate::payload::{Payload, Value, Log};
+use crate::payload::{Log, Payload, Value};
 use crate::remote_node::RemoteNode;
-use anyhow::{anyhow, Context, Result};
-use std::collections::HashMap;
+use anyhow::{Context, Result, anyhow};
+use papaya::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -36,12 +36,12 @@ pub enum Node {
 }
 
 macro_rules! impl_try_from_node {
-    ($enum_type:ident => { $($fn_name:tt => $variant:ident($nested_type:ty)),* $(,)? }) => {
+    ($enum_type:ident { $($fn_name:tt => $variant:ident($nested_type:ty)),* $(,)? }) => {
         $(
             pub fn $fn_name (&self) -> Result<$nested_type> {
                 match self {
                     $enum_type::$variant(state) => Ok(state.clone()),
-                    _ => Err(anyhow!("invalid node state: {:?}. Expected: {:?}", self.state(), stringify!($variant))),
+                    _ => Err(anyhow!("Invalid node state: [{:?}]. Expected: [{:?}]", self.state(), stringify!($variant))),
                 }
             }
         )*
@@ -57,7 +57,7 @@ impl Node {
         }
     }
 
-    impl_try_from_node!(Node => {
+    impl_try_from_node!(Node {
         try_follower => Follower(NodeStateMachine<Follower>),
         try_candidate => Candidate(NodeStateMachine<Candidate>),
         try_leader => Leader(NodeStateMachine<Leader>),
@@ -110,7 +110,7 @@ impl NodeStateMachine<Follower> {
     }
 
     pub fn vote(&self, leader: &InstanceId) -> Result<()> {
-        self.cluster_nodes.get(leader)
+        self.cluster_nodes.pin().get(leader)
             .with_context(|| format!("Couldn't find leader {leader}"))?
             .vote_for(leader);
         Ok(())
@@ -120,7 +120,7 @@ impl NodeStateMachine<Follower> {
         if let Some(leader_id) = &self.state.leader_id && leader_id == leader {
             Ok(())
         } else {
-            Err(anyhow!("leader_id verification failed. Node's leader_id = {:?}, request's leader_id = {leader:?}", self.state.leader_id))
+            Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]", self.state.leader_id.as_ref(), leader.as_ref()))
         }
     }
 }
@@ -135,10 +135,10 @@ impl NodeStateMachine<Candidate> {
     }
 
     pub fn start_election(&self) -> Result<()> {
-        for remote_node in self.cluster_nodes.values() {
+        for remote_node in self.cluster_nodes.pin().values() {
             remote_node.call_for_vote();
         }
-        todo!("Consider async call instead")
+        todo!("Consider concurrent broadcast call instead")
     }
 }
 
@@ -160,7 +160,7 @@ impl NodeStateMachine<Leader> {
 #[cfg(test)]
 mod tests {
     use crate::node_state::{Follower, NodeStateMachine};
-    use std::collections::HashMap;
+    use papaya::HashMap;
 
     fn change_state() {
         let node = NodeStateMachine::<Follower>::new(HashMap::new());
