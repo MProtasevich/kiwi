@@ -1,0 +1,11 @@
+[profile.release]
+strip = "symbols"
+opt-level = "z" # try 3 for speed
+lto = "fat"
+codegen-units = 1
+
+[workspace]
+resolver = "2"
+members = [
+  "rafty",
+]
