@@ -1,11 +1,11 @@
 use crate::log::CommandLog;
-use crate::payload::{Command, CommandType, Key, Payload, ValueId};
+use crate::payload::{Command, CommandType, ValueId};
 use crate::remote_node::RemoteNode;
+use crate::storage::Storage;
 use anyhow::{Context, Result, anyhow};
 use papaya::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use crate::storage::Storage;
 
 pub trait NodeState: Debug {
 }
@@ -186,9 +186,9 @@ impl NodeStateMachine<Leader> {
 mod tests {
     use crate::log::InMemoryCommandLog;
     use crate::node_state::{Follower, NodeStateMachine};
+    use crate::storage::InMemoryStorage;
     use papaya::HashMap;
     use std::sync::Arc;
-    use crate::storage::InMemoryStorage;
 
     fn change_state() {
         let node = NodeStateMachine::<Follower>::new(Arc::new(HashMap::new()), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
