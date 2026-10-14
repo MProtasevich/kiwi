@@ -1,13 +1,23 @@
+use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
+use dashmap::DashMap;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub type ValueId = Arc<str>;
 
-pub trait Key: Send + Sync {
+pub trait Key: Debug + Send + Sync {
     fn key(&self) -> ValueId;
 }
 
-pub trait Payload: Debug + Key {
+#[derive(Debug, Clone)]
+pub enum Payload {
+    Integer(i64),
+    Float(f64),
+    String(String),
+    DateTime(DateTime<Utc>),
+    Object, // reserved for future implementation
 }
 
 #[derive(Debug, Default)]
@@ -19,20 +29,45 @@ impl Key for Value {
     }
 }
 
-impl Payload for Value {
-}
-
-pub struct Uncommitted;
-pub struct Committed;
-
 #[derive(Debug)]
 pub enum Command {
-    Set(Box<dyn Payload>),
+    Set(Payload), // fixme wrapping with Arc may have sense
     Get(ValueId),
+    Update, // reserved for future implementation
     Delete(ValueId),
 }
 
+impl Command {
+
+    pub fn get_type(&self) -> CommandType {
+        match self {
+            Command::Set(_) | Command::Delete(_) => CommandType::Write,
+            Command::Get(_) => CommandType::Read,
+            Command::Update => CommandType::Modify,
+        }
+    }
+
+}
+
+impl Clone for Command {
+    fn clone(&self) -> Self {
+        match self {
+            Command::Set(payload) => Command::Set(payload.clone()),
+            Command::Get(key) => Command::Get(Arc::clone(key)),
+            Command::Delete(key) => Command::Delete(Arc::clone(key)),
+            Command::Update => Command::Update,
+        }
+    }
+}
+
 #[derive(Debug)]
+pub enum CommandType {
+    Read,
+    Write,
+    Modify,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum PersistenceState {
     Committed,
     Uncommitted,
