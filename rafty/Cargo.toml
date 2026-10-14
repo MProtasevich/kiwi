@@ -7,5 +7,8 @@ edition = "2024"
 name = "rafty"
 
 [dependencies]
+anyhow = { workspace = true }
+chrono = { workspace = true }
+dashmap = { workspace = true }
 papaya = { workspace = true }
 anyhow = { version = "1.0" }

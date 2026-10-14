@@ -16,7 +16,7 @@ pub trait FollowerClient: Debug + Send + Sync {
 }
 
 pub trait LeaderClient: Debug + Send + Sync {
-    fn send_payload(&self, payload: Box<dyn Payload>);
+    fn send_payload(&self, payload: Payload);
     fn commit(&self, key: &dyn Key);
     fn heartbeat(&self);
 }

@@ -1,9 +1,11 @@
-use crate::payload::{Log, Payload, Value};
+use crate::log::CommandLog;
+use crate::payload::{Command, CommandType, Key, Payload, ValueId};
 use crate::remote_node::RemoteNode;
 use anyhow::{Context, Result, anyhow};
 use papaya::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+use crate::storage::Storage;
 
 pub trait NodeState: Debug {
 }
@@ -36,11 +38,14 @@ pub enum Node {
 }
 
 macro_rules! impl_try_from_node {
-    ($enum_type:ident { $($fn_name:tt => $variant:ident($nested_type:ty)),* $(,)? }) => {
+    ($enum_type:ident { $($fn_name:tt($($leader_id:ident: $id_type:ty)?) => $variant:ident($nested_type:ty)),* $(,)? }) => {
         $(
-            pub fn $fn_name (&self) -> Result<$nested_type> {
+            pub fn $fn_name (&self$(, $leader_id: $id_type)?) -> Result<$nested_type> {
                 match self {
-                    $enum_type::$variant(state) => Ok(state.clone()),
+                    $enum_type::$variant(state) => {
+                        $(Node::verify_leader(&state, &$leader_id)?;)?
+                        Ok(state.clone())
+                    },
                     _ => Err(anyhow!("Invalid node state: [{:?}]. Expected: [{:?}]", self.state(), stringify!($variant))),
                 }
             }
@@ -58,10 +63,20 @@ impl Node {
     }
 
     impl_try_from_node!(Node {
-        try_follower => Follower(NodeStateMachine<Follower>),
-        try_candidate => Candidate(NodeStateMachine<Candidate>),
-        try_leader => Leader(NodeStateMachine<Leader>),
+        try_follower(leader_id: &InstanceId) => Follower(NodeStateMachine<Follower>),
+        try_candidate() => Candidate(NodeStateMachine<Candidate>),
+        try_leader() => Leader(NodeStateMachine<Leader>),
     });
+
+    #[inline]
+    fn verify_leader(follower: &NodeStateMachine<Follower>, leader: &InstanceId) -> Result<()> {
+        if let Some(leader_id) = &follower.state.leader_id && leader_id == leader {
+            Ok(())
+        } else {
+            Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]", follower.state.leader_id.as_ref(), leader.as_ref()))
+        }
+    }
+
 }
 
 pub type InstanceId = Arc<str>;
@@ -69,15 +84,17 @@ pub type InstanceId = Arc<str>;
 #[derive(Debug, Clone)]
 pub struct NodeStateMachine<State: NodeState> {
     cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
-    log: Arc<Log>,
+    log: Arc<dyn CommandLog>,
+    storage: Arc<dyn Storage>,
     state: State,
 }
 
 impl<T: NodeState> NodeStateMachine<T> {
-    pub fn new(cluster_nodes: HashMap<InstanceId, RemoteNode>) -> NodeStateMachine<Follower> {
+    pub fn new(cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> NodeStateMachine<Follower> {
         NodeStateMachine {
-            cluster_nodes: Arc::new(cluster_nodes),
-            log: Arc::new(Log::new(Box::<Value>::default())),
+            cluster_nodes,
+            log,
+            storage,
             state: Follower::default(),
         }
     }
@@ -86,9 +103,26 @@ impl<T: NodeState> NodeStateMachine<T> {
         NodeStateMachine {
             cluster_nodes: self.cluster_nodes,
             log: self.log,
+            storage: self.storage,
             state,
         }
     }
+
+    #[inline(always)]
+    fn _push(&self, key: ValueId, command: Command) -> Result<()> {
+        match command.get_type() {
+            CommandType::Read => Ok(()),
+            CommandType::Write | CommandType::Modify => self.log.push(key, command),
+        }
+    }
+
+    #[inline(always)]
+    fn _commit(&self, key: ValueId) -> Result<()> {
+        let payload = self.log.commit(Arc::clone(&key))?;
+        self.storage.push(key, payload)?;
+        Ok(())
+    }
+
 }
 
 impl NodeStateMachine<Follower> {
@@ -100,13 +134,12 @@ impl NodeStateMachine<Follower> {
         self.state.leader_id = Some(leader_id);
     }
 
-    pub fn accept(&mut self, payload: impl Payload + 'static) -> Result<()> {
-        self.log = Arc::new(Log::new(Box::new(payload)));
-        todo!()
+    pub fn push(&self, key: ValueId, command: Command) -> Result<()> {
+        self._push(key, command)
     }
 
-    pub fn committed(&mut self, payload: impl Payload + 'static) -> Result<()> {
-        todo!()
+    pub fn commit(&self, key: ValueId) -> Result<()> {
+        self._commit(key)
     }
 
     pub fn vote(&self, leader: &InstanceId) -> Result<()> {
@@ -116,13 +149,6 @@ impl NodeStateMachine<Follower> {
         Ok(())
     }
 
-    pub fn verify_leader(&self, leader: &InstanceId) -> Result<()> {
-        if let Some(leader_id) = &self.state.leader_id && leader_id == leader {
-            Ok(())
-        } else {
-            Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]", self.state.leader_id.as_ref(), leader.as_ref()))
-        }
-    }
 }
 
 impl NodeStateMachine<Candidate> {
@@ -147,23 +173,25 @@ impl NodeStateMachine<Leader> {
         self.into(Follower::new(leader_id))
     }
 
-    pub fn push(&mut self, payload: impl Payload + 'static) -> Result<()> {
-        self.log = Arc::new(Log::new(Box::new(payload)));
-        todo!()
+    pub fn push(&self, key: ValueId, command: Command) -> Result<()> {
+        self._push(key, command)
     }
 
-    pub fn commit(&mut self, payload: impl Payload + 'static) -> Result<()> {
-        todo!()
+    pub fn commit(&self, key: ValueId) -> Result<()> {
+        self._commit(key)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::log::InMemoryCommandLog;
     use crate::node_state::{Follower, NodeStateMachine};
     use papaya::HashMap;
+    use std::sync::Arc;
+    use crate::storage::InMemoryStorage;
 
     fn change_state() {
-        let node = NodeStateMachine::<Follower>::new(HashMap::new());
+        let node = NodeStateMachine::<Follower>::new(Arc::new(HashMap::new()), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
         let node1 = node.into_candidate();
         let node2 = node1.into_leader();
     }
