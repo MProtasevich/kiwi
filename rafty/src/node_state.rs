@@ -7,7 +7,7 @@ use papaya::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-pub trait NodeState: Debug {
+pub(crate) trait StateOption: Debug {
 }
 
 #[derive(Debug, Clone, Default)]
@@ -20,21 +20,21 @@ impl Follower {
         Self { leader_id: Some(leader_id) }
     }
 }
-impl NodeState for Follower {}
+impl StateOption for Follower {}
 
 #[derive(Debug, Clone)]
 pub struct Candidate;
-impl NodeState for Candidate {}
+impl StateOption for Candidate {}
 
 #[derive(Debug, Clone)]
 pub struct Leader;
-impl NodeState for Leader {}
+impl StateOption for Leader {}
 
 #[derive(Debug)]
 pub enum Node {
-    Follower(NodeStateMachine<Follower>),
-    Candidate(NodeStateMachine<Candidate>),
-    Leader(NodeStateMachine<Leader>),
+    Follower(State<Follower>),
+    Candidate(State<Candidate>),
+    Leader(State<Leader>),
 }
 
 macro_rules! impl_try_from_node {
@@ -54,7 +54,8 @@ macro_rules! impl_try_from_node {
 }
 
 impl Node {
-    fn state(&self) -> &dyn NodeState {
+
+    fn state(&self) -> &dyn StateOption {
         match self {
             Node::Follower(state) => &state.state,
             Node::Candidate(state) => &state.state,
@@ -63,13 +64,13 @@ impl Node {
     }
 
     impl_try_from_node!(Node {
-        try_follower(leader_id: &InstanceId) => Follower(NodeStateMachine<Follower>),
-        try_candidate() => Candidate(NodeStateMachine<Candidate>),
-        try_leader() => Leader(NodeStateMachine<Leader>),
+        try_follower(leader_id: &InstanceId) => Follower(State<Follower>),
+        try_candidate() => Candidate(State<Candidate>),
+        try_leader() => Leader(State<Leader>),
     });
 
     #[inline]
-    fn verify_leader(follower: &NodeStateMachine<Follower>, leader: &InstanceId) -> Result<()> {
+    fn verify_leader(follower: &State<Follower>, leader: &InstanceId) -> Result<()> {
         if let Some(leader_id) = &follower.state.leader_id && leader_id == leader {
             Ok(())
         } else {
@@ -81,17 +82,19 @@ impl Node {
 
 pub type InstanceId = Arc<str>;
 
+#[allow(private_bounds)]
 #[derive(Debug, Clone)]
-pub struct NodeStateMachine<State: NodeState> {
+pub struct State<S: StateOption> {
     cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
     log: Arc<dyn CommandLog>,
     storage: Arc<dyn Storage>,
-    state: State,
+    state: S,
 }
 
-impl<T: NodeState> NodeStateMachine<T> {
-    pub fn new(cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> NodeStateMachine<Follower> {
-        NodeStateMachine {
+#[allow(private_bounds)]
+impl<S: StateOption> State<S> {
+    pub fn new(cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> State<Follower> {
+        State {
             cluster_nodes,
             log,
             storage,
@@ -99,8 +102,8 @@ impl<T: NodeState> NodeStateMachine<T> {
         }
     }
 
-    fn into<State: NodeState>(self, state: State) -> NodeStateMachine<State> {
-        NodeStateMachine {
+    fn _into<IntoState: StateOption>(self, state: IntoState) -> State<IntoState> {
+        State {
             cluster_nodes: self.cluster_nodes,
             log: self.log,
             storage: self.storage,
@@ -125,9 +128,10 @@ impl<T: NodeState> NodeStateMachine<T> {
 
 }
 
-impl NodeStateMachine<Follower> {
-    pub fn into_candidate(self) -> NodeStateMachine<Candidate> {
-        self.into(Candidate)
+impl State<Follower> {
+
+    pub fn into_candidate(self) -> State<Candidate> {
+        self._into(Candidate)
     }
 
     pub fn set_leader(&mut self, leader_id: InstanceId) {
@@ -151,13 +155,13 @@ impl NodeStateMachine<Follower> {
 
 }
 
-impl NodeStateMachine<Candidate> {
-    pub fn into_leader(self) -> NodeStateMachine<Leader> {
-        self.into(Leader)
+impl State<Candidate> {
+    pub fn into_leader(self) -> State<Leader> {
+        self._into(Leader)
     }
 
-    pub fn into_follower(self, leader_id: InstanceId) -> NodeStateMachine<Follower> {
-        self.into(Follower::new(leader_id))
+    pub fn into_follower(self, leader_id: InstanceId) -> State<Follower> {
+        self._into(Follower::new(leader_id))
     }
 
     pub fn start_election(&self) -> Result<()> {
@@ -168,9 +172,9 @@ impl NodeStateMachine<Candidate> {
     }
 }
 
-impl NodeStateMachine<Leader> {
-    pub fn into_follower(self, leader_id: InstanceId) -> NodeStateMachine<Follower> {
-        self.into(Follower::new(leader_id))
+impl State<Leader> {
+    pub fn into_follower(self, leader_id: InstanceId) -> State<Follower> {
+        self._into(Follower::new(leader_id))
     }
 
     pub fn push(&self, key: ValueId, command: Command) -> Result<()> {
@@ -185,13 +189,13 @@ impl NodeStateMachine<Leader> {
 #[cfg(test)]
 mod tests {
     use crate::log::InMemoryCommandLog;
-    use crate::node_state::{Follower, NodeStateMachine};
+    use crate::node_state::{Follower, State};
     use crate::storage::InMemoryStorage;
     use papaya::HashMap;
     use std::sync::Arc;
 
     fn change_state() {
-        let node = NodeStateMachine::<Follower>::new(Arc::new(HashMap::new()), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
+        let node = State::<Follower>::new(Arc::new(HashMap::new()), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
         let node1 = node.into_candidate();
         let node2 = node1.into_leader();
     }
