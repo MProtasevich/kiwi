@@ -1,5 +1,5 @@
+use crate::payload::{Payload, ValueId};
 use std::fmt::Debug;
-use crate::payload::{Key, Payload};
 use std::sync::Arc;
 
 type InstanceId = str;
@@ -10,14 +10,14 @@ pub trait CandidateClient: Debug + Send + Sync {
 
 pub trait FollowerClient: Debug + Send + Sync {
     fn vote_for(&self, instance_id: &InstanceId);
-    fn ack(&self, key: &dyn Key);
-    fn ack_commit(&self, key: &dyn Key);
+    fn ack(&self, key: &ValueId);
+    fn ack_commit(&self, key: &ValueId);
     fn heartbeat(&self);
 }
 
 pub trait LeaderClient: Debug + Send + Sync {
     fn send_payload(&self, payload: Payload);
-    fn commit(&self, key: &dyn Key);
+    fn commit(&self, key: &ValueId);
     fn heartbeat(&self);
 }
 

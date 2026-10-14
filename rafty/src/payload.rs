@@ -4,10 +4,6 @@ use std::sync::Arc;
 
 pub type ValueId = Arc<str>;
 
-pub trait Key: Debug + Send + Sync {
-    fn key(&self) -> ValueId;
-}
-
 #[derive(Debug, Clone)]
 pub enum Payload {
     Integer(i64),
@@ -15,15 +11,6 @@ pub enum Payload {
     String(String),
     DateTime(DateTime<Utc>),
     Object, // reserved for future implementation
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct Value(u64);
-
-impl Key for Value {
-    fn key(&self) -> ValueId {
-        Arc::from(self.0.to_string())
-    }
 }
 
 #[derive(Debug)]
@@ -68,10 +55,4 @@ pub enum CommandType {
 pub enum PersistenceState {
     Committed,
     Uncommitted,
-}
-
-#[derive(Debug)]
-pub struct Log {
-    pub command: Command,
-    pub state: PersistenceState,
 }
