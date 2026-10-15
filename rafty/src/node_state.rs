@@ -3,13 +3,17 @@ use crate::node_state::states::{Candidate, Follower, Leader, StateOption};
 use crate::payload::{Command, CommandType, ValueId};
 use crate::remote_node::RemoteNode;
 use crate::storage::Storage;
-use anyhow::{Context, Result, anyhow};
+use crate::transport::model::VoteResp;
+use anyhow::{Result, anyhow};
+use dashmap::DashSet;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod states {
     use crate::node_state::InstanceId;
+    use dashmap::DashSet;
     use std::fmt::Debug;
 
     pub(super) trait StateOption: Debug {}
@@ -27,7 +31,9 @@ pub mod states {
     impl StateOption for Follower {}
 
     #[derive(Debug, Clone)]
-    pub struct Candidate;
+    pub struct Candidate {
+        pub(super) votes_collected: DashSet<InstanceId>,
+    }
     impl StateOption for Candidate {}
 
     #[derive(Debug, Clone)]
@@ -60,6 +66,7 @@ macro_rules! impl_try_from_node {
 
 impl Node {
 
+    #[inline]
     fn _state(&self) -> &dyn StateOption {
         match self {
             Node::Follower(state) => &state.state,
@@ -81,29 +88,36 @@ pub type InstanceId = Arc<str>;
 #[allow(private_bounds)]
 #[derive(Debug, Clone)]
 pub struct State<S: StateOption> {
+    instance_id: InstanceId,
     cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
     log: Arc<dyn CommandLog>,
     storage: Arc<dyn Storage>,
+    term: Arc<AtomicU64>,
     state: S,
 }
 
 #[allow(private_bounds)]
 impl<S: StateOption> State<S> {
 
-    pub fn new(cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> State<Follower> {
+    pub fn new(instance_id: InstanceId, cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> State<Follower> {
         State {
+            instance_id,
             cluster_nodes,
             log,
             storage,
+            term: Arc::default(),
             state: Follower::default(),
         }
     }
 
+    #[inline(always)]
     fn _into<IntoState: StateOption>(self, state: IntoState) -> State<IntoState> {
         State {
+            instance_id: self.instance_id,
             cluster_nodes: self.cluster_nodes,
             log: self.log,
             storage: self.storage,
+            term: self.term,
             state,
         }
     }
@@ -123,22 +137,24 @@ impl<S: StateOption> State<S> {
         Ok(())
     }
 
+    #[inline]
+    fn _vote(&self, proposed_term: u64) -> VoteResp {
+        let current_term = self.term.fetch_max(proposed_term, Ordering::Relaxed);
+
+        VoteResp {
+            instance_id: Arc::clone(&self.instance_id),
+            term: proposed_term,
+            voted: proposed_term > current_term,
+        }
+    }
+
 }
 
 impl State<Follower> {
 
-    #[inline]
-    fn _verify_leader(&self, leader: &InstanceId) -> Result<()> {
-        if let Some(leader_id) = &self.state.leader_id && leader_id == leader {
-            Ok(())
-        } else {
-            Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]",
-                self.state.leader_id.as_ref(), leader.as_ref()))
-        }
-    }
-
     pub fn into_candidate(self) -> State<Candidate> {
-        self._into(Candidate)
+        let capacity = self.cluster_nodes.capacity();
+        self._into(Candidate { votes_collected: DashSet::with_capacity(capacity) })
     }
 
     pub fn set_leader(&mut self, leader_id: InstanceId) {
@@ -153,11 +169,19 @@ impl State<Follower> {
         self._commit(key)
     }
 
-    pub fn vote(&self, leader: &InstanceId) -> Result<()> {
-        self.cluster_nodes.get(leader)
-            .with_context(|| format!("Couldn't find leader {leader}"))?
-            .vote_for(leader);
-        Ok(())
+    pub fn vote(&self, leader: &InstanceId, proposed_term: u64) -> Result<VoteResp> {
+        self._verify_leader(leader)?;
+        Ok(self._vote(proposed_term))
+    }
+
+    #[inline]
+    fn _verify_leader(&self, leader: &InstanceId) -> Result<()> {
+        if let Some(leader_id) = &self.state.leader_id && leader_id == leader {
+            Ok(())
+        } else {
+            Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]",
+                self.state.leader_id.as_ref(), leader.as_ref()))
+        }
     }
 
 }
@@ -177,6 +201,10 @@ impl State<Candidate> {
             remote_node.call_for_vote();
         }
         todo!("Consider concurrent broadcast call instead")
+    }
+
+    pub fn vote(&self, proposed_term: u64) -> VoteResp {
+        self._vote(proposed_term)
     }
 
 }
@@ -202,11 +230,10 @@ mod tests {
     use crate::log::InMemoryCommandLog;
     use crate::node_state::{Follower, State};
     use crate::storage::InMemoryStorage;
-    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn change_state() {
-        let node = State::<Follower>::new(Arc::new(HashMap::new()), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
+        let node = State::<Follower>::new(Arc::default(), Arc::default(), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
         let node1 = node.into_candidate();
         let node2 = node1.into_leader();
     }
