@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 pub trait CommandLog: Debug + Send + Sync {
 
     fn push(&self, key: ValueId, cmd: Command) -> Result<()>;
+
     fn commit(&self, key: ValueId) -> Result<Payload>;
+
     fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<Command>>;
 
 }
