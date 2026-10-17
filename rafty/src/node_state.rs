@@ -1,19 +1,16 @@
 use crate::log::CommandLog;
 use crate::node_state::states::{Candidate, Follower, Leader, StateOption};
 use crate::payload::{Command, CommandType, ValueId};
-use crate::remote_node::RemoteNode;
+use crate::remote_node::ClusterClient;
 use crate::storage::Storage;
 use crate::transport::model::VoteResp;
 use anyhow::{Result, anyhow};
-use dashmap::DashSet;
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod states {
     use crate::node_state::InstanceId;
-    use dashmap::DashSet;
     use std::fmt::Debug;
 
     pub(super) trait StateOption: Debug {}
@@ -31,9 +28,7 @@ pub mod states {
     impl StateOption for Follower {}
 
     #[derive(Debug, Clone)]
-    pub struct Candidate {
-        pub(super) votes_collected: DashSet<InstanceId>,
-    }
+    pub struct Candidate;
     impl StateOption for Candidate {}
 
     #[derive(Debug, Clone)]
@@ -89,7 +84,7 @@ pub type InstanceId = Arc<str>;
 #[derive(Debug, Clone)]
 pub struct State<S: StateOption> {
     instance_id: InstanceId,
-    cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
+    cluster_nodes: Arc<ClusterClient>,
     log: Arc<dyn CommandLog>,
     storage: Arc<dyn Storage>,
     term: Arc<AtomicU64>,
@@ -99,7 +94,7 @@ pub struct State<S: StateOption> {
 #[allow(private_bounds)]
 impl<S: StateOption> State<S> {
 
-    pub fn new(instance_id: InstanceId, cluster_nodes: Arc<HashMap<InstanceId, RemoteNode>>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> State<Follower> {
+    pub fn new(instance_id: InstanceId, cluster_nodes: Arc<ClusterClient>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> State<Follower> {
         State {
             instance_id,
             cluster_nodes,
@@ -123,15 +118,18 @@ impl<S: StateOption> State<S> {
     }
 
     #[inline(always)]
-    fn _push(&self, key: ValueId, command: Command) -> Result<()> {
+    async fn _push(&self, key: ValueId, command: Command) -> Result<()> {
         match command.get_type() {
             CommandType::Read => Ok(()),
-            CommandType::Write | CommandType::Modify => self.log.push(key, command),
+            CommandType::Write | CommandType::Modify => {
+                self.log.push(key, command)
+            },
         }
     }
 
     #[inline(always)]
-    fn _commit(&self, key: ValueId) -> Result<()> {
+    async fn _commit(&self, key: ValueId) -> Result<()> {
+        self.cluster_nodes.commit(Arc::clone(&key)).await?;
         let payload = self.log.commit(Arc::clone(&key))?;
         self.storage.push(key, payload)?;
         Ok(())
@@ -153,20 +151,19 @@ impl<S: StateOption> State<S> {
 impl State<Follower> {
 
     pub fn into_candidate(self) -> State<Candidate> {
-        let capacity = self.cluster_nodes.capacity();
-        self._into(Candidate { votes_collected: DashSet::with_capacity(capacity) })
+        self._into(Candidate)
     }
 
     pub fn set_leader(&mut self, leader_id: InstanceId) {
         self.state.leader_id = Some(leader_id);
     }
 
-    pub fn push(&self, key: ValueId, command: Command) -> Result<()> {
-        self._push(key, command)
+    pub async fn push(&self, key: ValueId, command: Command) -> Result<()> {
+        self._push(key, command).await
     }
 
-    pub fn commit(&self, key: ValueId) -> Result<()> {
-        self._commit(key)
+    pub async fn commit(&self, key: ValueId) -> Result<()> {
+        self._commit(key).await
     }
 
     pub fn vote(&self, leader: &InstanceId, proposed_term: u64) -> Result<VoteResp> {
@@ -196,11 +193,28 @@ impl State<Candidate> {
         self._into(Follower::new(leader_id))
     }
 
-    pub fn start_election(&self) -> Result<()> {
-        for remote_node in self.cluster_nodes.values() {
-            remote_node.call_for_vote();
+    pub async fn start_election(self) -> Result<State<Leader>, State<Follower>> {
+        let result = self.cluster_nodes.ask_for_vote(Arc::clone(&self.instance_id)).await;
+        match result {
+            Ok(_) => Ok(self.into_leader()),
+            Err(_) => Err(self._into(Follower { leader_id: None })),
         }
-        todo!("Consider concurrent broadcast call instead")
+        // let votes_collected = DashSet::with_capacity(self.cluster_nodes.capacity());
+        // votes_collected.insert(Arc::clone(&self.instance_id));
+        //
+        // let mut remote_calls = self.cluster_nodes.values()
+        //     .map(|remote_node| remote_node.call_for_vote())
+        //     .collect::<FuturesUnordered<_>>();
+        //
+        // while let Some(response) = remote_calls.next().await {
+        //     if response.voted && response.term == self.term.load(Ordering::Relaxed) {
+        //         votes_collected.insert(response.instance_id);
+        //     }
+        //     if votes_collected.len() * Self::QUORUM_MULTIPLIER > self.cluster_nodes.len() {
+        //         return Ok(())
+        //     }
+        // }
+        // Err(anyhow!("Not enough votes collected"))
     }
 
     pub fn vote(&self, proposed_term: u64) -> VoteResp {
@@ -215,12 +229,12 @@ impl State<Leader> {
         self._into(Follower::new(leader_id))
     }
 
-    pub fn push(&self, key: ValueId, command: Command) -> Result<()> {
-        self._push(key, command)
+    pub async fn push(&self, key: ValueId, command: Command) -> Result<()> {
+        self._push(key, command).await
     }
 
-    pub fn commit(&self, key: ValueId) -> Result<()> {
-        self._commit(key)
+    pub async fn commit(&self, key: ValueId) -> Result<()> {
+        self._commit(key).await
     }
 
 }

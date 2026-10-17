@@ -8,6 +8,8 @@ name = "rafty"
 
 [dependencies]
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 chrono = { workspace = true }
 dashmap = { workspace = true }
+futures = { workspace = true }
 serde = { workspace = true }
