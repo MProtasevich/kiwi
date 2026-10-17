@@ -1,24 +1,40 @@
 use crate::payload::{Payload, ValueId};
+use crate::transport::model::VoteResp;
+use anyhow::{Result, anyhow};
+use async_trait::async_trait;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-type InstanceId = str;
+type InstanceId = Arc<str>;
 
+#[async_trait]
 pub trait CandidateClient: Debug + Send + Sync {
-    fn call_for_vote(&self, instance_id: &InstanceId);
+
+    async fn ask_for_vote(&self, instance_id: &InstanceId) -> VoteResp;
+
 }
 
+#[async_trait]
 pub trait FollowerClient: Debug + Send + Sync {
-    fn vote_for(&self, instance_id: &InstanceId);
-    fn ack(&self, key: &ValueId);
-    fn ack_commit(&self, key: &ValueId);
-    fn heartbeat(&self);
+
+    // async fn ack(&self, key: ValueId);
+
+    // async fn ack_commit(&self, key: &ValueId);
+
 }
 
+#[async_trait]
 pub trait LeaderClient: Debug + Send + Sync {
-    fn send_payload(&self, payload: Payload);
-    fn commit(&self, key: &ValueId);
-    fn heartbeat(&self);
+
+    async fn send_payload(&self, payload: Payload);
+
+    async fn commit(&self, key: &ValueId);
+
+    async fn heartbeat(&self);
+
 }
 
 #[derive(Debug)]
@@ -29,11 +45,86 @@ pub struct RemoteNode {
 }
 
 impl RemoteNode {
-    pub fn call_for_vote(&self) {
+
+    pub async fn call_for_vote(&self) -> VoteResp {
         todo!()
     }
 
-    pub fn vote_for(&self, id: &InstanceId) {
+    pub async fn vote_for(&self, id: &InstanceId) {
         todo!()
     }
+
+    pub async fn commit(&self, key: &ValueId) {
+        todo!()
+    }
+
+}
+
+#[derive(Debug, Default)]
+pub struct ClusterClient {
+    instance_id: InstanceId,
+    remote_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
+}
+
+impl ClusterClient {
+
+    const QUORUM_MULTIPLIER: usize = 2;
+
+    pub fn new(instance_id: InstanceId, remote_nodes: Arc<HashMap<InstanceId, RemoteNode>>) -> Self {
+        ClusterClient {
+            instance_id,
+            remote_nodes,
+        }
+    }
+
+    pub async fn commit(&self, key: ValueId) -> Result<()> {
+        self.broadcast_call_quorum(Arc::new(key), // Double wrap on Arc because I can't assign str as generic param
+               async |node, req| node.leader_client.commit(req.as_ref()).await,
+               |_| true)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn ask_for_vote(&self, instance_id: InstanceId) -> Result<()> {
+        self.broadcast_call_quorum(Arc::new(instance_id),
+               async |node, req| node.candidate_client.ask_for_vote(req.as_ref()).await,
+               |_| true)
+            .await
+            .map(|_| ())
+    }
+
+    #[inline]
+    async fn broadcast_call_quorum<Req: Debug, Resp, RemCall, SuccessPred>(
+        &self, request: Arc<Req>, remote_call_fn: RemCall, success_predicate: SuccessPred) -> Result<Vec<Resp>>
+    where RemCall: AsyncFn(&RemoteNode, Arc<Req>) -> Resp,
+          SuccessPred: Fn(&Resp) -> bool
+    {
+        self.broadcast_call(request, remote_call_fn, success_predicate,
+                |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
+    }
+
+
+    async fn broadcast_call<Req: Debug, Resp, RemCall, SuccessPred, QuorumPred>(&self, request: Arc<Req>,
+            remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred) -> Result<Vec<Resp>>
+    where RemCall: AsyncFn(&RemoteNode, Arc<Req>) -> Resp,
+          SuccessPred: Fn(&Resp) -> bool,
+          QuorumPred: Fn(usize) -> bool,
+    {
+        let mut remote_calls = self.remote_nodes.iter()
+            .filter(|(instance_id, _)| self.instance_id != **instance_id)
+            .map(|(_, remote_node)| remote_call_fn(remote_node, Arc::clone(&request)))
+            .collect::<FuturesUnordered<_>>();
+
+        let mut succeeded_requests = Vec::with_capacity(remote_calls.len());
+        while let Some(response) = remote_calls.next().await {
+            if success_criteria(&response) {
+                succeeded_requests.push(response);
+            }
+            if quorum_predicate(succeeded_requests.len()) {
+                return Ok(succeeded_requests);
+            }
+        }
+        Err(anyhow!("Batch request failed. Quorum hasn't been achieved for request: {request:?}"))
+    }
+
 }
