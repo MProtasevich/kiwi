@@ -1,10 +1,10 @@
-use std::fmt::Debug;
+use crate::payload::{Key, Value};
 use anyhow::Result;
-use crate::payload::{Command, Payload, ValueId};
+use std::fmt::Debug;
 
 pub trait Storage: Debug + Send + Sync {
 
-    fn push(&self, key: ValueId, payload: Payload) -> Result<()>;
+    fn push(&self, key: Key, payload: Value) -> Result<()>;
 
 }
 
@@ -12,7 +12,7 @@ pub trait Storage: Debug + Send + Sync {
 pub struct InMemoryStorage;
 
 impl Storage for InMemoryStorage {
-    fn push(&self, key: ValueId, payload: Payload) -> Result<()> {
+    fn push(&self, key: Key, payload: Value) -> Result<()> {
         todo!()
     }
 }
