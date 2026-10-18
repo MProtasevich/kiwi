@@ -1,6 +1,6 @@
 use crate::log::CommandLog;
 use crate::node_state::states::{Candidate, Follower, Leader, StateOption};
-use crate::payload::{Command, CommandType, ValueId};
+use crate::payload::{Command, CommandType, Key};
 use crate::remote_node::ClusterClient;
 use crate::storage::Storage;
 use crate::transport::model::VoteResp;
@@ -8,6 +8,16 @@ use anyhow::{Result, anyhow};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct InstanceId(Arc<str>);
+
+impl InstanceId {
+    pub fn new(value: &str) -> Self {
+        InstanceId(Arc::from(value))
+    }
+}
 
 pub mod states {
     use crate::node_state::InstanceId;
@@ -49,7 +59,7 @@ macro_rules! impl_try_from_node {
             pub fn $fn_name (&self$(, $leader_id: $id_type)?) -> Result<$nested_type> {
                 match self {
                     Self::$variant(state) => {
-                        $(let _ = &state._verify_leader(&$leader_id)?;)?
+                        $(let _ = &state._verify_leader($leader_id)?;)?
                         Ok(state.clone())
                     },
                     _ => Err(anyhow!("Invalid node state: [{:?}]. Expected: [{:?}]", self._state(), stringify!($variant))),
@@ -71,14 +81,12 @@ impl Node {
     }
 
     impl_try_from_node!(
-        try_follower(leader_id: &InstanceId) => Follower(State<Follower>),
+        try_follower(leader_id: InstanceId) => Follower(State<Follower>),
         try_candidate() => Candidate(State<Candidate>),
         try_leader() => Leader(State<Leader>),
     );
 
 }
-
-pub type InstanceId = Arc<str>;
 
 #[allow(private_bounds)]
 #[derive(Debug, Clone)]
@@ -118,7 +126,7 @@ impl<S: StateOption> State<S> {
     }
 
     #[inline(always)]
-    async fn _push(&self, key: ValueId, command: Command) -> Result<()> {
+    async fn _push(&self, key: Key, command: Command) -> Result<()> {
         match command.get_type() {
             CommandType::Read => Ok(()),
             CommandType::Write | CommandType::Modify => {
@@ -128,9 +136,9 @@ impl<S: StateOption> State<S> {
     }
 
     #[inline(always)]
-    async fn _commit(&self, key: ValueId) -> Result<()> {
-        self.cluster_nodes.commit(Arc::clone(&key)).await?;
-        let payload = self.log.commit(Arc::clone(&key))?;
+    async fn _commit(&self, key: Key) -> Result<()> {
+        self.cluster_nodes.commit(key.clone()).await?;
+        let payload = self.log.commit(key.clone())?;
         self.storage.push(key, payload)?;
         Ok(())
     }
@@ -140,7 +148,7 @@ impl<S: StateOption> State<S> {
         let current_term = self.term.fetch_max(proposed_term, Ordering::Relaxed);
 
         VoteResp {
-            instance_id: Arc::clone(&self.instance_id),
+            instance_id: self.instance_id.clone(),
             term: proposed_term,
             voted: proposed_term > current_term,
         }
@@ -158,26 +166,26 @@ impl State<Follower> {
         self.state.leader_id = Some(leader_id);
     }
 
-    pub async fn push(&self, key: ValueId, command: Command) -> Result<()> {
+    pub async fn push(&self, key: Key, command: Command) -> Result<()> {
         self._push(key, command).await
     }
 
-    pub async fn commit(&self, key: ValueId) -> Result<()> {
+    pub async fn commit(&self, key: Key) -> Result<()> {
         self._commit(key).await
     }
 
-    pub fn vote(&self, leader: &InstanceId, proposed_term: u64) -> Result<VoteResp> {
+    pub fn vote(&self, leader: InstanceId, proposed_term: u64) -> Result<VoteResp> {
         self._verify_leader(leader)?;
         Ok(self._vote(proposed_term))
     }
 
     #[inline]
-    fn _verify_leader(&self, leader: &InstanceId) -> Result<()> {
-        if let Some(leader_id) = &self.state.leader_id && leader_id == leader {
+    fn _verify_leader(&self, leader: InstanceId) -> Result<()> {
+        if let Some(leader_id) = &self.state.leader_id && leader_id == &leader {
             Ok(())
         } else {
             Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]",
-                self.state.leader_id.as_ref(), leader.as_ref()))
+                self.state.leader_id.as_ref(), leader))
         }
     }
 
@@ -194,7 +202,7 @@ impl State<Candidate> {
     }
 
     pub async fn start_election(self) -> Result<State<Leader>, State<Follower>> {
-        let result = self.cluster_nodes.ask_for_vote(Arc::clone(&self.instance_id)).await;
+        let result = self.cluster_nodes.ask_for_vote(self.instance_id.clone()).await;
         match result {
             Ok(_) => Ok(self.into_leader()),
             Err(_) => Err(self._into(Follower { leader_id: None })),
@@ -229,11 +237,11 @@ impl State<Leader> {
         self._into(Follower::new(leader_id))
     }
 
-    pub async fn push(&self, key: ValueId, command: Command) -> Result<()> {
+    pub async fn push(&self, key: Key, command: Command) -> Result<()> {
         self._push(key, command).await
     }
 
-    pub async fn commit(&self, key: ValueId) -> Result<()> {
+    pub async fn commit(&self, key: Key) -> Result<()> {
         self._commit(key).await
     }
 
@@ -242,12 +250,12 @@ impl State<Leader> {
 #[cfg(test)]
 mod tests {
     use crate::log::InMemoryCommandLog;
-    use crate::node_state::{Follower, State};
+    use crate::node_state::{Follower, InstanceId, State};
     use crate::storage::InMemoryStorage;
     use std::sync::Arc;
 
     fn change_state() {
-        let node = State::<Follower>::new(Arc::default(), Arc::default(), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
+        let node = State::<Follower>::new(InstanceId::default(), Arc::default(), Arc::new(InMemoryCommandLog), Arc::new(InMemoryStorage));
         let node1 = node.into_candidate();
         let node2 = node1.into_leader();
     }

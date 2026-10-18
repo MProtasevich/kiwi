@@ -1,14 +1,14 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use crate::node_state::InstanceId;
-use crate::payload::ValueId;
+use crate::payload::Key;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum CommandReq {
     Set(Payload), // fixme wrapping with Arc may have sense
-    Get(ValueId),
+    Get(Key),
     Update, // reserved for future implementation
-    Delete(ValueId),
+    Delete(Key),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

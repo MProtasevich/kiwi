@@ -1,4 +1,4 @@
-use crate::payload::{Payload, ValueId};
+use crate::payload::{Value, Key};
 use crate::transport::model::VoteResp;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
@@ -7,13 +7,12 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-
-type InstanceId = Arc<str>;
+use crate::node_state::InstanceId;
 
 #[async_trait]
 pub trait CandidateClient: Debug + Send + Sync {
 
-    async fn ask_for_vote(&self, instance_id: &InstanceId) -> VoteResp;
+    async fn ask_for_vote(&self, instance_id: InstanceId) -> VoteResp;
 
 }
 
@@ -29,9 +28,9 @@ pub trait FollowerClient: Debug + Send + Sync {
 #[async_trait]
 pub trait LeaderClient: Debug + Send + Sync {
 
-    async fn send_payload(&self, payload: Payload);
+    async fn send_payload(&self, payload: Value);
 
-    async fn commit(&self, key: &ValueId);
+    async fn commit(&self, key: Key);
 
     async fn heartbeat(&self);
 
@@ -50,11 +49,11 @@ impl RemoteNode {
         todo!()
     }
 
-    pub async fn vote_for(&self, id: &InstanceId) {
+    pub async fn vote_for(&self, id: InstanceId) {
         todo!()
     }
 
-    pub async fn commit(&self, key: &ValueId) {
+    pub async fn commit(&self, key: Key) {
         todo!()
     }
 
@@ -64,6 +63,10 @@ impl RemoteNode {
 pub struct ClusterClient {
     instance_id: InstanceId,
     remote_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
+}
+
+fn accept_all<T>(_response: &T) -> bool {
+    true
 }
 
 impl ClusterClient {
@@ -77,18 +80,18 @@ impl ClusterClient {
         }
     }
 
-    pub async fn commit(&self, key: ValueId) -> Result<()> {
+    pub async fn commit(&self, key: Key) -> Result<()> {
         self.broadcast_call_quorum(Arc::new(key), // Double wrap on Arc because I can't assign str as generic param
-               async |node, req| node.leader_client.commit(req.as_ref()).await,
-               |_| true)
+               async |node, req| node.leader_client.commit(req.as_ref().clone()).await,
+               accept_all)
             .await
             .map(|_| ())
     }
 
     pub async fn ask_for_vote(&self, instance_id: InstanceId) -> Result<()> {
         self.broadcast_call_quorum(Arc::new(instance_id),
-               async |node, req| node.candidate_client.ask_for_vote(req.as_ref()).await,
-               |_| true)
+               async |node, req| node.candidate_client.ask_for_vote(req.as_ref().clone()).await,
+               accept_all)
             .await
             .map(|_| ())
     }
@@ -102,7 +105,6 @@ impl ClusterClient {
         self.broadcast_call(request, remote_call_fn, success_predicate,
                 |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
     }
-
 
     async fn broadcast_call<Req: Debug, Resp, RemCall, SuccessPred, QuorumPred>(&self, request: Arc<Req>,
             remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred) -> Result<Vec<Resp>>
