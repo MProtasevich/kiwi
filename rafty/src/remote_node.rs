@@ -1,18 +1,19 @@
-use crate::payload::{Value, Key};
-use crate::transport::model::{CommonResponse, InstanceResponse, VoteResp};
+use crate::node_state::NodeId;
+use crate::payload::{Key, Value};
+use crate::transport::model::common::{CommitResponse, HeartbeatRequest, HeartbeatResponse, NodeResponse};
+use crate::transport::model::vote::VoteResponse;
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use crate::node_state::InstanceId;
 
 #[async_trait]
 pub trait CandidateClient: Debug + Send + Sync {
 
-    async fn ask_for_vote(&self, instance_id: &InstanceId) -> VoteResp;
+    async fn ask_for_vote(&self, node_id: &NodeId) -> VoteResponse;
 
 }
 
@@ -30,9 +31,9 @@ pub trait LeaderClient: Debug + Send + Sync {
 
     async fn send_payload(&self, payload: &Value);
 
-    async fn commit(&self, key: &Key) -> CommonResponse;
+    async fn commit(&self, key: &Key) -> CommitResponse;
 
-    async fn heartbeat(&self);
+    async fn heartbeat(&self, req: &HeartbeatRequest) -> HeartbeatResponse;
 
 }
 
@@ -45,11 +46,11 @@ pub struct RemoteNode {
 
 impl RemoteNode {
 
-    pub async fn call_for_vote(&self) -> VoteResp {
+    pub async fn call_for_vote(&self) -> VoteResponse {
         todo!()
     }
 
-    pub async fn vote_for(&self, id: InstanceId) {
+    pub async fn vote_for(&self, node_id: NodeId) {
         todo!()
     }
 
@@ -61,8 +62,8 @@ impl RemoteNode {
 
 #[derive(Debug, Default)]
 pub struct ClusterClient {
-    instance_id: InstanceId,
-    remote_nodes: Arc<HashMap<InstanceId, RemoteNode>>,
+    node_id: NodeId,
+    remote_nodes: Arc<HashMap<NodeId, RemoteNode>>,
 }
 
 fn accept_all<T>(_response: &T) -> bool {
@@ -73,9 +74,9 @@ impl ClusterClient {
 
     const QUORUM_MULTIPLIER: usize = 2;
 
-    pub fn new(instance_id: InstanceId, remote_nodes: Arc<HashMap<InstanceId, RemoteNode>>) -> Self {
+    pub fn new(node_id: NodeId, remote_nodes: Arc<HashMap<NodeId, RemoteNode>>) -> Self {
         ClusterClient {
-            instance_id,
+            node_id,
             remote_nodes,
         }
     }
@@ -88,8 +89,8 @@ impl ClusterClient {
             .map(|_| ())
     }
 
-    pub async fn ask_for_vote(&self, instance_id: &InstanceId) -> Result<()> {
-        self.broadcast_call_quorum(instance_id,
+    pub async fn ask_for_vote(&self, node_id: &NodeId) -> Result<()> {
+        self.broadcast_call_quorum(node_id,
                async |node, req| node.candidate_client.ask_for_vote(req).await,
                accept_all)
             .await
@@ -97,9 +98,9 @@ impl ClusterClient {
     }
 
     #[inline]
-    async fn broadcast_call_quorum<Req: Debug, Resp: InstanceResponse, RemCall, SuccessPred>(
+    async fn broadcast_call_quorum<Req: Debug, Resp: NodeResponse, RemCall, SuccessPred>(
             &self, request: &Req, remote_call_fn: RemCall, success_predicate: SuccessPred)
-        -> Result<HashMap<InstanceId, Resp>>
+        -> Result<HashMap<NodeId, Resp>>
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool
     {
@@ -107,22 +108,22 @@ impl ClusterClient {
                 |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
     }
 
-    async fn broadcast_call<Req: Debug, Resp: InstanceResponse, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
-            remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred)
-        -> Result<HashMap<InstanceId, Resp>>
+    async fn broadcast_call<Req: Debug, Resp: NodeResponse, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
+                                                                                              remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred)
+                                                                                              -> Result<HashMap<NodeId, Resp>>
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool,
           QuorumPred: Fn(usize) -> bool,
     {
         let mut remote_calls = self.remote_nodes.iter()
-            .filter(|(instance_id, _)| self.instance_id != **instance_id)
+            .filter(|(node_id, _)| self.node_id != **node_id)
             .map(|(_, remote_node)| remote_call_fn(remote_node, request))
             .collect::<FuturesUnordered<_>>();
 
         let mut succeeded_requests = HashMap::with_capacity(remote_calls.len());
         while let Some(response) = remote_calls.next().await {
             if success_criteria(&response) {
-                succeeded_requests.insert(response.instance_id().clone(), response);
+                succeeded_requests.insert(response.node_id().clone(), response);
             }
             if quorum_predicate(succeeded_requests.len()) {
                 return Ok(succeeded_requests);
