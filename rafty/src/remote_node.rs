@@ -1,5 +1,5 @@
 use crate::payload::{Value, Key};
-use crate::transport::model::VoteResp;
+use crate::transport::model::{CommonResponse, InstanceResponse, VoteResp};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
@@ -30,7 +30,7 @@ pub trait LeaderClient: Debug + Send + Sync {
 
     async fn send_payload(&self, payload: &Value);
 
-    async fn commit(&self, key: &Key);
+    async fn commit(&self, key: &Key) -> CommonResponse;
 
     async fn heartbeat(&self);
 
@@ -97,8 +97,9 @@ impl ClusterClient {
     }
 
     #[inline]
-    async fn broadcast_call_quorum<Req: Debug, Resp, RemCall, SuccessPred>(
-        &self, request: &Req, remote_call_fn: RemCall, success_predicate: SuccessPred) -> Result<Vec<Resp>>
+    async fn broadcast_call_quorum<Req: Debug, Resp: InstanceResponse, RemCall, SuccessPred>(
+            &self, request: &Req, remote_call_fn: RemCall, success_predicate: SuccessPred)
+        -> Result<HashMap<InstanceId, Resp>>
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool
     {
@@ -106,8 +107,9 @@ impl ClusterClient {
                 |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
     }
 
-    async fn broadcast_call<Req: Debug, Resp, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
-            remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred) -> Result<Vec<Resp>>
+    async fn broadcast_call<Req: Debug, Resp: InstanceResponse, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
+            remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred)
+        -> Result<HashMap<InstanceId, Resp>>
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool,
           QuorumPred: Fn(usize) -> bool,
@@ -117,10 +119,10 @@ impl ClusterClient {
             .map(|(_, remote_node)| remote_call_fn(remote_node, request))
             .collect::<FuturesUnordered<_>>();
 
-        let mut succeeded_requests = Vec::with_capacity(remote_calls.len());
+        let mut succeeded_requests = HashMap::with_capacity(remote_calls.len());
         while let Some(response) = remote_calls.next().await {
             if success_criteria(&response) {
-                succeeded_requests.push(response);
+                succeeded_requests.insert(response.instance_id().clone(), response);
             }
             if quorum_predicate(succeeded_requests.len()) {
                 return Ok(succeeded_requests);
