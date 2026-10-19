@@ -137,7 +137,7 @@ impl<S: StateOption> State<S> {
 
     #[inline(always)]
     async fn _commit(&self, key: Key) -> Result<()> {
-        self.cluster_nodes.commit(key.clone()).await?;
+        self.cluster_nodes.commit(&key).await?;
         let payload = self.log.commit(key.clone())?;
         self.storage.push(key, payload)?;
         Ok(())
@@ -202,7 +202,7 @@ impl State<Candidate> {
     }
 
     pub async fn start_election(self) -> Result<State<Leader>, State<Follower>> {
-        let result = self.cluster_nodes.ask_for_vote(self.instance_id.clone()).await;
+        let result = self.cluster_nodes.ask_for_vote(&self.instance_id).await;
         match result {
             Ok(_) => Ok(self.into_leader()),
             Err(_) => Err(self._into(Follower { leader_id: None })),
