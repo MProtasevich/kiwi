@@ -81,16 +81,16 @@ impl ClusterClient {
     }
 
     pub async fn commit(&self, key: Key) -> Result<()> {
-        self.broadcast_call_quorum(Arc::new(key), // Double wrap on Arc because I can't assign str as generic param
-               async |node, req| node.leader_client.commit(req.as_ref().clone()).await,
+        self.broadcast_call_quorum(&key, // Double wrap on Arc because I can't assign str as generic param
+               async |node, req| node.leader_client.commit(req.clone()).await,
                accept_all)
             .await
             .map(|_| ())
     }
 
     pub async fn ask_for_vote(&self, instance_id: InstanceId) -> Result<()> {
-        self.broadcast_call_quorum(Arc::new(instance_id),
-               async |node, req| node.candidate_client.ask_for_vote(req.as_ref().clone()).await,
+        self.broadcast_call_quorum(&instance_id,
+               async |node, req| node.candidate_client.ask_for_vote(req.clone()).await,
                accept_all)
             .await
             .map(|_| ())
@@ -98,23 +98,23 @@ impl ClusterClient {
 
     #[inline]
     async fn broadcast_call_quorum<Req: Debug, Resp, RemCall, SuccessPred>(
-        &self, request: Arc<Req>, remote_call_fn: RemCall, success_predicate: SuccessPred) -> Result<Vec<Resp>>
-    where RemCall: AsyncFn(&RemoteNode, Arc<Req>) -> Resp,
+        &self, request: &Req, remote_call_fn: RemCall, success_predicate: SuccessPred) -> Result<Vec<Resp>>
+    where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool
     {
         self.broadcast_call(request, remote_call_fn, success_predicate,
                 |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
     }
 
-    async fn broadcast_call<Req: Debug, Resp, RemCall, SuccessPred, QuorumPred>(&self, request: Arc<Req>,
+    async fn broadcast_call<Req: Debug, Resp, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
             remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred) -> Result<Vec<Resp>>
-    where RemCall: AsyncFn(&RemoteNode, Arc<Req>) -> Resp,
+    where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool,
           QuorumPred: Fn(usize) -> bool,
     {
         let mut remote_calls = self.remote_nodes.iter()
             .filter(|(instance_id, _)| self.instance_id != **instance_id)
-            .map(|(_, remote_node)| remote_call_fn(remote_node, Arc::clone(&request)))
+            .map(|(_, remote_node)| remote_call_fn(remote_node, request))
             .collect::<FuturesUnordered<_>>();
 
         let mut succeeded_requests = Vec::with_capacity(remote_calls.len());
