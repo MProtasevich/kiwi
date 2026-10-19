@@ -1,48 +1,115 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use crate::node_state::InstanceId;
-use crate::payload::Key;
+use crate::transport::model::common::NodeResponse;
 
-#[derive(Debug, Serialize, Deserialize)]
-pub enum CommandReq {
-    Set(Payload), // fixme wrapping with Arc may have sense
-    Get(Key),
-    Update, // reserved for future implementation
-    Delete(Key),
+macro_rules! impl_node_response {
+    ($($id_type:ty),* $(,)?) => {
+        use crate::node_state::NodeId;
+        $(
+            impl NodeResponse for $id_type {
+                fn node_id(&self) -> &NodeId {
+                    &self.node_id
+                }
+            }
+        )*
+    };
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum Payload {
-    Integer(i64),
-    Float(f64),
-    String(String),
-    DateTime(DateTime<Utc>),
-    Object, // reserved for future implementation
-}
+impl_node_response!(
+    common::HeartbeatResponse,
+    common::CommitResponse,
+    log::LogReplicationResponse,
+    vote::VoteResponse,
+);
 
-pub trait InstanceResponse {
-    fn instance_id(&self) -> &InstanceId;
-}
+pub mod common {
+    use crate::node_state::NodeId;
+    use crate::payload::Key;
+    use chrono::{DateTime, Utc};
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct VoteResp {
-    pub instance_id: InstanceId,
-    pub term: u64,
-    pub voted: bool,
-}
+    pub trait NodeResponse {
+        fn node_id(&self) -> &NodeId;
+    }
 
-impl InstanceResponse for VoteResp {
-    fn instance_id(&self) -> &InstanceId {
-        &self.instance_id
+    pub struct HeartbeatRequest {
+        pub node_id: NodeId,
+        pub term: u64,
+        pub timestamp: DateTime<Utc>,
+        pub last_change: DateTime<Utc>,
+    }
+
+    pub struct HeartbeatResponse {
+        pub node_id: NodeId,
+        pub term: u64,
+        pub timestamp: DateTime<Utc>,
+    }
+
+    pub struct CommitRequest {
+        pub node_id: NodeId,
+        pub term: u64,
+        pub key: Key,
+    }
+
+    pub struct CommitResponse {
+        pub node_id: NodeId,
+        pub term: u64,
+        pub key: Key,
     }
 }
 
-pub struct CommonResponse {
-    pub instance_id: InstanceId,
+pub mod command {
+    use crate::payload::Key;
+    use chrono::{DateTime, Utc};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub enum CommandRequest {
+        Set(Key, Payload), // fixme wrapping with Arc may have sense
+        Commit(Key),
+        Get(Key),
+        Update, // reserved for future implementation
+        Delete(Key),
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    pub enum Payload {
+        Integer(i64),
+        Float(f64),
+        String(String),
+        DateTime(DateTime<Utc>),
+        Object, // reserved for future implementation
+    }
 }
 
-impl InstanceResponse for CommonResponse {
-    fn instance_id(&self) -> &InstanceId {
-        &self.instance_id
+pub mod log {
+    use crate::node_state::NodeId;
+    use crate::transport::model::command::CommandRequest;
+    use chrono::{DateTime, Utc};
+
+    pub struct LogReplicationRequest {
+        pub node_id: NodeId,
+        pub from: DateTime<Utc>,
     }
+
+    pub struct LogReplicationResponse {
+        pub node_id: NodeId,
+        pub commands: Vec<CommandRequest>,
+    }
+}
+
+pub mod vote {
+    use crate::node_state::NodeId;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct VoteRequest {
+        pub node_id: NodeId,
+        pub term: u64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct VoteResponse {
+        pub node_id: NodeId,
+        pub term: u64,
+        pub voted: bool,
+    }
+
 }
