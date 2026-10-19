@@ -12,7 +12,7 @@ use crate::node_state::InstanceId;
 #[async_trait]
 pub trait CandidateClient: Debug + Send + Sync {
 
-    async fn ask_for_vote(&self, instance_id: InstanceId) -> VoteResp;
+    async fn ask_for_vote(&self, instance_id: &InstanceId) -> VoteResp;
 
 }
 
@@ -28,9 +28,9 @@ pub trait FollowerClient: Debug + Send + Sync {
 #[async_trait]
 pub trait LeaderClient: Debug + Send + Sync {
 
-    async fn send_payload(&self, payload: Value);
+    async fn send_payload(&self, payload: &Value);
 
-    async fn commit(&self, key: Key);
+    async fn commit(&self, key: &Key);
 
     async fn heartbeat(&self);
 
@@ -80,17 +80,17 @@ impl ClusterClient {
         }
     }
 
-    pub async fn commit(&self, key: Key) -> Result<()> {
-        self.broadcast_call_quorum(&key, // Double wrap on Arc because I can't assign str as generic param
-               async |node, req| node.leader_client.commit(req.clone()).await,
+    pub async fn commit(&self, key: &Key) -> Result<()> {
+        self.broadcast_call_quorum(key,
+               async |node, req| node.leader_client.commit(req).await,
                accept_all)
             .await
             .map(|_| ())
     }
 
-    pub async fn ask_for_vote(&self, instance_id: InstanceId) -> Result<()> {
-        self.broadcast_call_quorum(&instance_id,
-               async |node, req| node.candidate_client.ask_for_vote(req.clone()).await,
+    pub async fn ask_for_vote(&self, instance_id: &InstanceId) -> Result<()> {
+        self.broadcast_call_quorum(instance_id,
+               async |node, req| node.candidate_client.ask_for_vote(req).await,
                accept_all)
             .await
             .map(|_| ())
