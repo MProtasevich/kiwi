@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Default, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstanceId(Arc<str>);
 
 impl InstanceId {
