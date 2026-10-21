@@ -1,9 +1,12 @@
 use crate::log::CommandLog;
 use crate::node_state::states::{Candidate, Follower, Leader, StateOption};
-use crate::payload::{Command, CommandType, Key};
+use crate::payload::{CommandType, Key};
 use crate::remote_node::ClusterClient;
 use crate::storage::Storage;
-use crate::transport::model::vote::VoteResponse;
+use crate::transport::model::ClusterMessage;
+use crate::transport::model::command::Command;
+use crate::transport::model::common::CommitRequest;
+use crate::transport::model::vote::{VoteRequest, VoteResponse};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -126,13 +129,19 @@ impl<S: StateOption> State<S> {
     }
 
     #[inline(always)]
-    async fn _push(&self, key: Key, command: Command) -> Result<()> {
+    async fn _push(&self, command: Command, nodes_notification_fn: impl AsyncFn(&ClusterClient, ClusterMessage<Command>) -> Result<()>) -> Result<()> {
         match command.get_type() {
             CommandType::Read => Ok(()),
             CommandType::Write | CommandType::Modify => {
-                let result = self.log.push(key.clone(), command);
+                // let request = Wrapper::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
+                // FIXME get rid of cloning
+                let command_to_log = Arc::new(command.clone());
+                let result = self.log.push(command_to_log);
                 if result.is_ok() {
-                    self._commit(key).await?
+                    // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead
+                    // let command = Wrapper::<Command>::into(command);
+                    let command = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
+                    nodes_notification_fn(self.cluster_nodes.as_ref(), command).await?
                 }
                 result
             },
@@ -140,23 +149,21 @@ impl<S: StateOption> State<S> {
     }
 
     #[inline(always)]
-    async fn _commit(&self, key: Key) -> Result<()> {
+    async fn _commit(&self, key: Key, nodes_notification_fn: impl AsyncFn(&ClusterClient, ClusterMessage<CommitRequest>) -> Result<()>) -> Result<()>
+    {
+        let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), CommitRequest { key: key.clone() });
         // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead
-        self.cluster_nodes.commit(&key).await?;
+        nodes_notification_fn(self.cluster_nodes.as_ref(), request).await?;
+        // self.cluster_nodes.commit(&key).await?;
         let payload = self.log.commit(key.clone())?;
         self.storage.push(key, payload)?;
         Ok(())
     }
 
     #[inline]
-    fn _vote(&self, proposed_term: u64) -> VoteResponse {
+    fn _vote(&self, proposed_term: u64) -> ClusterMessage<VoteResponse> {
         let current_term = self.term.fetch_max(proposed_term, Ordering::Relaxed);
-
-        VoteResponse {
-            node_id: self.node_id.clone(),
-            term: proposed_term,
-            voted: proposed_term > current_term,
-        }
+        ClusterMessage::new(self.node_id.clone(), proposed_term, VoteResponse { voted: proposed_term > current_term })
     }
 
 }
@@ -171,17 +178,15 @@ impl State<Follower> {
         self.state.leader_id = Some(leader_id);
     }
 
-    pub async fn push(&self, key: Key, command: Command) -> Result<()> {
-        // FIXME Follower should just apply changes, without notification
-        self._push(key, command).await
+    pub async fn push(&self, command: Command) -> Result<()> {
+        self._push(command, async |_, _| Ok(())).await
     }
 
     pub async fn commit(&self, key: Key) -> Result<()> {
-        // FIXME Follower should just apply changes, without notification
-        self._commit(key).await
+        self._commit(key, async |_, _| Ok(())).await
     }
 
-    pub fn vote(&self, leader: NodeId, proposed_term: u64) -> Result<VoteResponse> {
+    pub fn vote(&self, leader: NodeId, proposed_term: u64) -> Result<ClusterMessage<VoteResponse>> {
         self._verify_leader(leader)?;
         Ok(self._vote(proposed_term))
     }
@@ -209,14 +214,15 @@ impl State<Candidate> {
     }
 
     pub async fn start_election(self) -> Result<State<Leader>, State<Follower>> {
-        let result = self.cluster_nodes.ask_for_vote(&self.node_id).await;
+        let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), VoteRequest {});
+        let result = self.cluster_nodes.ask_for_vote(request).await;
         match result {
             Ok(_) => Ok(self.into_leader()),
             Err(_) => Err(self._into(Follower { leader_id: None })),
         }
     }
 
-    pub fn vote(&self, proposed_term: u64) -> VoteResponse {
+    pub fn vote(&self, proposed_term: u64) -> ClusterMessage<VoteResponse> {
         self._vote(proposed_term)
     }
 
@@ -228,12 +234,12 @@ impl State<Leader> {
         self._into(Follower::new(leader_id))
     }
 
-    pub async fn push(&self, key: Key, command: Command) -> Result<()> {
-        self._push(key, command).await
+    pub async fn push(&self, command: Command) -> Result<()> {
+        self._push(command, ClusterClient::push).await
     }
 
     pub async fn commit(&self, key: Key) -> Result<()> {
-        self._commit(key).await
+        self._commit(key, ClusterClient::commit).await
     }
 
 }

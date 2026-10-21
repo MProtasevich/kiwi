@@ -1,7 +1,8 @@
 use crate::node_state::NodeId;
-use crate::payload::{Key, Value};
-use crate::transport::model::common::{CommitResponse, HeartbeatRequest, HeartbeatResponse, NodeResponse};
-use crate::transport::model::vote::VoteResponse;
+use crate::transport::model::command::Command;
+use crate::transport::model::common::{CommitRequest, CommitResponse, HeartbeatRequest, HeartbeatResponse};
+use crate::transport::model::vote::{VoteRequest, VoteResponse};
+use crate::transport::model::{ClusterMessage, NodeAware};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -13,51 +14,25 @@ use std::sync::Arc;
 #[async_trait]
 pub trait CandidateClient: Debug + Send + Sync {
 
-    async fn ask_for_vote(&self, node_id: &NodeId) -> VoteResponse;
-
-}
-
-#[async_trait]
-pub trait FollowerClient: Debug + Send + Sync {
-
-    // async fn ack(&self, key: ValueId);
-
-    // async fn ack_commit(&self, key: &ValueId);
+    async fn ask_for_vote(&self, node_id: &ClusterMessage<VoteRequest>) -> ClusterMessage<VoteResponse>;
 
 }
 
 #[async_trait]
 pub trait LeaderClient: Debug + Send + Sync {
 
-    async fn send_payload(&self, payload: &Value);
+    async fn send_payload(&self, payload: &ClusterMessage<Command>) -> ClusterMessage<()>;
 
-    async fn commit(&self, key: &Key) -> CommitResponse;
+    async fn commit(&self, req: &ClusterMessage<CommitRequest>) -> ClusterMessage<CommitResponse>;
 
-    async fn heartbeat(&self, req: &HeartbeatRequest) -> HeartbeatResponse;
+    async fn heartbeat(&self, req: &ClusterMessage<HeartbeatRequest>) -> ClusterMessage<HeartbeatResponse>;
 
 }
 
 #[derive(Debug)]
 pub struct RemoteNode {
     candidate_client: Arc<dyn CandidateClient>,
-    follower_client: Arc<dyn FollowerClient>,
     leader_client: Arc<dyn LeaderClient>,
-}
-
-impl RemoteNode {
-
-    pub async fn call_for_vote(&self) -> VoteResponse {
-        todo!()
-    }
-
-    pub async fn vote_for(&self, node_id: NodeId) {
-        todo!()
-    }
-
-    pub async fn commit(&self, key: Key) {
-        todo!()
-    }
-
 }
 
 #[derive(Debug, Default)]
@@ -81,24 +56,32 @@ impl ClusterClient {
         }
     }
 
-    pub async fn commit(&self, key: &Key) -> Result<()> {
-        self.broadcast_call_quorum(key,
-               async |node, req| node.leader_client.commit(req).await,
-               accept_all)
+    pub async fn push(&self, request: ClusterMessage<Command>) -> Result<()> {
+        self.broadcast_call_quorum(&request,
+                async |node, command| node.leader_client.send_payload(command).await,
+                accept_all)
             .await
             .map(|_| ())
     }
 
-    pub async fn ask_for_vote(&self, node_id: &NodeId) -> Result<()> {
-        self.broadcast_call_quorum(node_id,
-               async |node, req| node.candidate_client.ask_for_vote(req).await,
-               accept_all)
+    pub async fn commit(&self, request: ClusterMessage<CommitRequest>) -> Result<()> {
+        self.broadcast_call_quorum(&request,
+                async |node, req| node.leader_client.commit(req).await,
+                accept_all)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn ask_for_vote(&self, request: ClusterMessage<VoteRequest>) -> Result<()> {
+        self.broadcast_call_quorum(&request,
+                async |node, req| node.candidate_client.ask_for_vote(req).await,
+                accept_all)
             .await
             .map(|_| ())
     }
 
     #[inline]
-    async fn broadcast_call_quorum<Req: Debug, Resp: NodeResponse, RemCall, SuccessPred>(
+    async fn broadcast_call_quorum<Req: Debug, Resp: NodeAware, RemCall, SuccessPred>(
             &self, request: &Req, remote_call_fn: RemCall, success_predicate: SuccessPred)
         -> Result<HashMap<NodeId, Resp>>
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
@@ -108,9 +91,9 @@ impl ClusterClient {
                 |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
     }
 
-    async fn broadcast_call<Req: Debug, Resp: NodeResponse, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
-                                                                                              remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred)
-                                                                                              -> Result<HashMap<NodeId, Resp>>
+    async fn broadcast_call<Req: Debug, Resp: NodeAware, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
+            remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred)
+            -> Result<HashMap<NodeId, Resp>>
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool,
           QuorumPred: Fn(usize) -> bool,

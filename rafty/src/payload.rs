@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Key(Arc<str>);
@@ -22,32 +22,34 @@ pub enum Value {
 }
 
 #[derive(Debug)]
-pub enum Command {
-    Set(Value), // fixme wrapping with Arc may have sense
+pub enum StorageCommand {
+    Set(Key, Value), // fixme wrapping with Arc may have sense
     Get(Key),
+    Commit(Key),
     Update, // reserved for future implementation
     Delete(Key),
 }
 
-impl Command {
+impl StorageCommand {
 
     pub fn get_type(&self) -> CommandType {
         match self {
-            Command::Set(_) | Command::Delete(_) => CommandType::Write,
-            Command::Get(_) => CommandType::Read,
-            Command::Update => CommandType::Modify,
+            StorageCommand::Set(_, _) | StorageCommand::Delete(_) => CommandType::Write,
+            StorageCommand::Get(_) | StorageCommand::Commit(_) => CommandType::Read,
+            StorageCommand::Update => CommandType::Modify,
         }
     }
 
 }
 
-impl Clone for Command {
+impl Clone for StorageCommand {
     fn clone(&self) -> Self {
         match self {
-            Command::Set(payload) => Command::Set(payload.clone()),
-            Command::Get(key) => Command::Get(key.clone()),
-            Command::Delete(key) => Command::Delete(key.clone()),
-            Command::Update => Command::Update,
+            StorageCommand::Set(key, payload) => StorageCommand::Set(key.clone(), payload.clone()),
+            StorageCommand::Get(key) => StorageCommand::Get(key.clone()),
+            StorageCommand::Commit(key) => StorageCommand::Commit(key.clone()),
+            StorageCommand::Delete(key) => StorageCommand::Delete(key.clone()),
+            StorageCommand::Update => StorageCommand::Update,
         }
     }
 }
