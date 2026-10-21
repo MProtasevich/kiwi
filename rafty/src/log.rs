@@ -1,15 +1,17 @@
-use std::fmt::Debug;
-use crate::payload::{Command, Value, Key};
+use crate::payload::{Key, StorageCommand, Value};
+use crate::transport::model::command::Command;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use std::fmt::Debug;
+use std::sync::Arc;
 
 pub trait CommandLog: Debug + Send + Sync {
 
-    fn push(&self, key: Key, cmd: Command) -> Result<()>;
+    fn push(&self, cmd: Arc<Command>) -> Result<()>;
 
     fn commit(&self, key: Key) -> Result<Value>;
 
-    fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<Command>>;
+    fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<StorageCommand>>;
 
 }
 
@@ -18,7 +20,7 @@ pub struct InMemoryCommandLog;
 
 impl CommandLog for InMemoryCommandLog {
 
-    fn push(&self, key: Key, cmd: Command) -> Result<()> {
+    fn push(&self, cmd: Arc<Command>) -> Result<()> {
         todo!()
     }
 
@@ -26,7 +28,7 @@ impl CommandLog for InMemoryCommandLog {
         todo!()
     }
 
-    fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<Command>> {
+    fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<StorageCommand>> {
         todo!()
     }
 
