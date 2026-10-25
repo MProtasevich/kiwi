@@ -4,3 +4,4 @@ pub mod remote_node;
 pub mod log;
 pub mod storage;
 pub mod transport;
+pub mod job;
