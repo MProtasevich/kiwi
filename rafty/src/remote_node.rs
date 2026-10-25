@@ -1,6 +1,7 @@
 use crate::node_state::NodeId;
 use crate::transport::model::command::Command;
 use crate::transport::model::common::{CommitRequest, CommitResponse, HeartbeatRequest, HeartbeatResponse};
+use crate::transport::model::log::{LogReplicationRequest, LogReplicationResponse};
 use crate::transport::model::vote::{VoteRequest, VoteResponse};
 use crate::transport::model::{ClusterMessage, NodeAware};
 use anyhow::{Result, anyhow};
@@ -19,6 +20,13 @@ pub trait CandidateClient: Debug + Send + Sync {
 }
 
 #[async_trait]
+pub trait FollowerClient: Debug + Send + Sync {
+
+    async fn request_log(&self, request: ClusterMessage<LogReplicationRequest>) -> ClusterMessage<LogReplicationResponse>;
+
+}
+
+#[async_trait]
 pub trait LeaderClient: Debug + Send + Sync {
 
     async fn send_payload(&self, payload: &ClusterMessage<Command>) -> ClusterMessage<()>;
@@ -32,6 +40,7 @@ pub trait LeaderClient: Debug + Send + Sync {
 #[derive(Debug)]
 pub struct RemoteNode {
     candidate_client: Arc<dyn CandidateClient>,
+    follower_client: Arc<dyn FollowerClient>,
     leader_client: Arc<dyn LeaderClient>,
 }
 
@@ -56,6 +65,15 @@ impl ClusterClient {
         }
     }
 
+    pub async fn heartbeat(&self, request: ClusterMessage<HeartbeatRequest>) -> Result<()> {
+        self.broadcast_call(&request,
+                async |node, req| node.leader_client.heartbeat(req).await,
+                accept_all,
+                |_| true)
+            .await
+            .map(|_| ())
+    }
+
     pub async fn push(&self, request: ClusterMessage<Command>) -> Result<()> {
         self.broadcast_call_quorum(&request,
                 async |node, command| node.leader_client.send_payload(command).await,
@@ -78,6 +96,14 @@ impl ClusterClient {
                 accept_all)
             .await
             .map(|_| ())
+    }
+
+    pub async fn ask_for_log(&self, request: ClusterMessage<LogReplicationRequest>) -> Result<LogReplicationResponse> {
+        let Some(leader_node) = self.remote_nodes.get(request.node_id()) else {
+            return Err(anyhow!("leader with id [{:?}] not found", request.node_id()));
+        };
+        let message = leader_node.follower_client.request_log(request).await;
+        Ok(message.payload)
     }
 
     #[inline]

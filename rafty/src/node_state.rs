@@ -1,3 +1,5 @@
+use crate::job::log_replication::LogReplication;
+use crate::job::registry::{JobKey, JobRegistry};
 use crate::log::CommandLog;
 use crate::node_state::states::{Candidate, Follower, Leader, StateOption};
 use crate::payload::{CommandType, Key};
@@ -5,13 +7,16 @@ use crate::remote_node::ClusterClient;
 use crate::storage::Storage;
 use crate::transport::model::ClusterMessage;
 use crate::transport::model::command::Command;
-use crate::transport::model::common::CommitRequest;
+use crate::transport::model::common::{CommitRequest, HeartbeatRequest};
 use crate::transport::model::vote::{VoteRequest, VoteResponse};
 use anyhow::{Result, anyhow};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+use tokio::time::timeout;
 
 #[derive(Debug, Default, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeId(Arc<str>);
@@ -26,7 +31,7 @@ pub mod states {
     use crate::node_state::NodeId;
     use std::fmt::Debug;
 
-    pub(super) trait StateOption: Debug {}
+    pub(super) trait StateOption: Debug + Send + Sync + 'static{}
 
     #[derive(Debug, Clone, Default)]
     pub struct Follower {
@@ -84,7 +89,7 @@ impl Node {
     }
 
     impl_try_from_node!(
-        try_follower(leader_id: NodeId) => Follower(State<Follower>),
+        try_follower(leader_id: Option<NodeId>) => Follower(State<Follower>),
         try_candidate() => Candidate(State<Candidate>),
         try_leader() => Leader(State<Leader>),
     );
@@ -98,6 +103,7 @@ pub struct State<S: StateOption> {
     cluster_nodes: Arc<ClusterClient>,
     log: Arc<dyn CommandLog>,
     storage: Arc<dyn Storage>,
+    job_registry: Arc<JobRegistry>,
     term: Arc<AtomicU64>,
     state: S,
 }
@@ -105,12 +111,13 @@ pub struct State<S: StateOption> {
 #[allow(private_bounds)]
 impl<S: StateOption> State<S> {
 
-    pub fn new(node_id: NodeId, cluster_nodes: Arc<ClusterClient>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>) -> State<Follower> {
+    pub fn new(node_id: NodeId, cluster_nodes: Arc<ClusterClient>, log: Arc<dyn CommandLog>, storage: Arc<dyn Storage>, job_registry: Arc<JobRegistry>) -> State<Follower> {
         State {
             node_id,
             cluster_nodes,
             log,
             storage,
+            job_registry,
             term: Arc::default(),
             state: Follower::default(),
         }
@@ -123,6 +130,7 @@ impl<S: StateOption> State<S> {
             cluster_nodes: self.cluster_nodes,
             log: self.log,
             storage: self.storage,
+            job_registry: self.job_registry,
             term: self.term,
             state,
         }
@@ -149,8 +157,7 @@ impl<S: StateOption> State<S> {
     }
 
     #[inline(always)]
-    async fn _commit(&self, key: Key, nodes_notification_fn: impl AsyncFn(&ClusterClient, ClusterMessage<CommitRequest>) -> Result<()>) -> Result<()>
-    {
+    async fn _commit(&self, key: Key, nodes_notification_fn: impl AsyncFn(&ClusterClient, ClusterMessage<CommitRequest>) -> Result<()>) -> Result<()> {
         let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), CommitRequest { key: key.clone() });
         // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead
         nodes_notification_fn(self.cluster_nodes.as_ref(), request).await?;
@@ -166,9 +173,15 @@ impl<S: StateOption> State<S> {
         ClusterMessage::new(self.node_id.clone(), proposed_term, VoteResponse { voted: proposed_term > current_term })
     }
 
+    fn _construct_msg<T>(&self, payload: T) -> ClusterMessage<T> {
+        ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), payload)
+    }
+
 }
 
 impl State<Follower> {
+
+    const CHUNK_SIZE: usize = 1024;
 
     pub fn into_candidate(self) -> State<Candidate> {
         self._into(Candidate)
@@ -186,14 +199,36 @@ impl State<Follower> {
         self._commit(key, async |_, _| Ok(())).await
     }
 
-    pub fn vote(&self, leader: NodeId, proposed_term: u64) -> Result<ClusterMessage<VoteResponse>> {
-        self._verify_leader(leader)?;
+    pub fn vote(&self, _leader: NodeId, proposed_term: u64) -> Result<ClusterMessage<VoteResponse>> {
+        // self._verify_leader(leader)?;
         Ok(self._vote(proposed_term))
     }
 
+    pub fn process_heartbeat(&self, request: HeartbeatRequest) -> Result<()> {
+        let (Some(node_last_entry), Some(leader_last_entry)) = (self.log.get_last_change(), request.last_change) else {
+            return Ok(())
+        };
+        if node_last_entry <= leader_last_entry {
+            let Some(_leader_id) = &self.state.leader_id else {
+                return Ok(())
+            };
+            let cluster_nodes = Arc::clone(&self.cluster_nodes);
+            let log = Arc::clone(&self.log);
+            let term = Arc::clone(&self.term);
+            let replication = LogReplication::new(cluster_nodes, log, node_last_entry, term, self.node_id.clone(), Self::CHUNK_SIZE);
+            self.job_registry.register_and_start(JobKey::LogReplication, replication);
+        }
+        Ok(())
+    }
+
+    async fn replicate_log(since: DateTime<Utc>) {
+        todo!()
+    }
+
+    // TODO change Option enum to custom MasterKey, where MasterKey::Key instance can be created exclusively by crate
     #[inline]
-    fn _verify_leader(&self, leader: NodeId) -> Result<()> {
-        if let Some(leader_id) = &self.state.leader_id && leader_id == &leader {
+    fn _verify_leader(&self, leader: Option<NodeId>) -> Result<()> {
+        if leader.is_none() || self.state.leader_id == leader {
             Ok(())
         } else {
             Err(anyhow!("Verification failed. Node's leader_id = [{:?}], request's leader_id = [{:?}]",
@@ -214,7 +249,7 @@ impl State<Candidate> {
     }
 
     pub async fn start_election(self) -> Result<State<Leader>, State<Follower>> {
-        let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), VoteRequest {});
+        let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), VoteRequest);
         let result = self.cluster_nodes.ask_for_vote(request).await;
         match result {
             Ok(_) => Ok(self.into_leader()),
@@ -240,6 +275,12 @@ impl State<Leader> {
 
     pub async fn commit(&self, key: Key) -> Result<()> {
         self._commit(key, ClusterClient::commit).await
+    }
+
+    pub async fn send_heartbeat(&self) -> Result<()> {
+        let request = HeartbeatRequest { timestamp: Utc::now(), last_change: self.log.get_last_change() };
+        let message = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), request);
+        timeout(Duration::from_secs(2), self.cluster_nodes.heartbeat(message)).await?
     }
 
 }

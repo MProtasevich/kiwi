@@ -19,6 +19,7 @@ pub struct ClusterMessage<T> {
 }
 
 impl<T> NodeAware for ClusterMessage<T> {
+    #[inline(always)]
     fn node_id(&self) -> &NodeId {
         &self.metadata.node_id
     }
@@ -52,7 +53,7 @@ pub mod common {
     #[derive(Debug, Serialize, Deserialize)]
     pub struct HeartbeatRequest {
         pub timestamp: DateTime<Utc>,
-        pub last_change: DateTime<Utc>,
+        pub last_change: Option<DateTime<Utc>>,
     }
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -77,21 +78,37 @@ pub mod command {
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
 
+    pub trait TimeAware {
+        fn timestamp(&self) -> Option<DateTime<Utc>>;
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum Command {
-        Set(Key, Payload), // fixme wrapping with Arc may have sense
-        Commit(Key),
+        Set(Key, Payload, DateTime<Utc>), // fixme wrapping with Arc may have sense
+        Commit(Key, DateTime<Utc>),
         Get(Key),
-        Update, // reserved for future implementation
-        Delete(Key),
+        Update(DateTime<Utc>), // reserved for future implementation
+        Delete(Key, DateTime<Utc>),
     }
 
     impl Command {
         pub fn get_type(&self) -> CommandType {
             match self {
-                Command::Set(_, _) | Command::Delete(_) => CommandType::Write,
-                Command::Get(_) | Command::Commit(_) => CommandType::Read,
-                Command::Update => CommandType::Modify,
+                Command::Set(_, _, _) | Command::Delete(_, _) => CommandType::Write,
+                Command::Get(_) | Command::Commit(_, _) => CommandType::Read,
+                Command::Update(_) => CommandType::Modify,
+            }
+        }
+    }
+
+    impl TimeAware for Command {
+        fn timestamp(&self) -> Option<DateTime<Utc>> {
+            match self {
+                Command::Set(_, _, timestamp) => Some(timestamp.clone()),
+                Command::Update(timestamp) => Some(timestamp.clone()),
+                Command::Commit(_, timestamp) => Some(timestamp.clone()),
+                Command::Delete(_, timestamp) => Some(timestamp.clone()),
+                Command::Get(_) => None,
             }
         }
     }
@@ -107,20 +124,21 @@ pub mod command {
 }
 
 pub mod log {
-    use crate::node_state::NodeId;
     use crate::transport::model::command::Command;
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct LogReplicationRequest {
-        pub node_id: NodeId,
-        pub from: DateTime<Utc>,
+        pub cursor_from: CursorId,
+        pub chunk_size: usize,
     }
+
+    pub type CursorId = DateTime<Utc>;
 
     #[derive(Debug, Serialize, Deserialize)]
     pub struct LogReplicationResponse {
-        pub node_id: NodeId,
+        pub cursor_id: CursorId,
         pub commands: Vec<Command>,
     }
 }
