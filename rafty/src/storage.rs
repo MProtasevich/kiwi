@@ -1,4 +1,5 @@
-use crate::payload::{Key, Value};
+use crate::payload::Value;
+use crate::transport::model::Key;
 use anyhow::Result;
 use std::fmt::Debug;
 
