@@ -3,13 +3,12 @@ use crate::transport::model::command::Command;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::fmt::Debug;
-use std::sync::Arc;
 
 pub trait CommandLog: Debug + Send + Sync {
 
-    fn push(&self, cmd: Arc<Command>) -> Result<()>;
+    fn push(&self, cmd: Command) -> Result<()>;
 
-    fn push_all(&self, cmds: Vec<Arc<Command>>) -> Result<()>;
+    fn push_all(&self, cmds: Vec<Command>) -> Result<()>;
 
     fn commit(&self, key: Key) -> Result<Value>;
 
@@ -24,11 +23,11 @@ pub struct InMemoryCommandLog;
 
 impl CommandLog for InMemoryCommandLog {
 
-    fn push(&self, _cmd: Arc<Command>) -> Result<()> {
+    fn push(&self, _cmd: Command) -> Result<()> {
         todo!()
     }
 
-    fn push_all(&self, _cmds: Vec<Arc<Command>>) -> Result<()> {
+    fn push_all(&self, _cmds: Vec<Command>) -> Result<()> {
         todo!()
     }
 

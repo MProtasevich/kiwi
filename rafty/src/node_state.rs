@@ -143,7 +143,7 @@ impl<S: StateOption> State<S> {
             CommandType::Write | CommandType::Modify => {
                 // let request = Wrapper::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
                 // FIXME get rid of cloning
-                let command_to_log = Arc::new(command.clone());
+                let command_to_log = command.clone();
                 let result = self.log.push(command_to_log);
                 if result.is_ok() {
                     // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead

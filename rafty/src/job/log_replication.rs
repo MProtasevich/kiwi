@@ -39,10 +39,7 @@ impl Job for LogReplication {
             };
             prev_cursor = curr_cursor;
             curr_cursor = response.cursor_id;
-            let commands = response.commands.into_iter()
-                .map(Arc::new)
-                .collect();
-            let _ = self.log.push_all(commands);
+            let _ = self.log.push_all(response.commands);
         }
     }
 
