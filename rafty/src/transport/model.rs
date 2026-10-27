@@ -1,9 +1,19 @@
 use crate::node_state::NodeId;
 use serde::{Deserialize, Serialize};
 use std::ops::Deref;
+use std::sync::Arc;
 
 pub trait NodeAware {
     fn node_id(&self) -> &NodeId;
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Key(Arc<str>);
+
+impl Key {
+    pub fn new(s: &str) -> Self {
+        Key(Arc::from(s))
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,7 +56,7 @@ impl<T> ClusterMessage<T> {
 }
 
 pub mod common {
-    use crate::payload::Key;
+    use crate::transport::model::Key;
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
 
@@ -73,7 +83,8 @@ pub mod common {
 }
 
 pub mod command {
-    use crate::payload::{CommandType, Key};
+    use crate::payload::CommandType;
+    use crate::transport::model::Key;
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
@@ -84,7 +95,7 @@ pub mod command {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub enum Command {
-        Set(Key, Payload, DateTime<Utc>), // fixme wrapping with Arc may have sense
+        Set(Key, Payload, DateTime<Utc>), // FIXME wrapping with Arc may have sense
         Commit(Key, DateTime<Utc>),
         Get(Key),
         Update(DateTime<Utc>), // reserved for future implementation

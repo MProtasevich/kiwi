@@ -1,16 +1,6 @@
+use crate::transport::model::Key;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::sync::Arc;
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Key(Arc<str>);
-
-impl Key {
-    pub fn new(s: &str) -> Self {
-        Key(Arc::from(s))
-    }
-}
 
 #[derive(Debug, Clone)]
 pub enum Value {

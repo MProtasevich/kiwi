@@ -1,4 +1,5 @@
-use crate::payload::{Key, StorageCommand, Value};
+use crate::payload::Value;
+use crate::transport::model::Key;
 use crate::transport::model::command::Command;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -12,7 +13,7 @@ pub trait CommandLog: Debug + Send + Sync {
 
     fn commit(&self, key: Key) -> Result<Value>;
 
-    fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<StorageCommand>>;
+    fn get_commands(&self, since: DateTime<Utc>) -> Result<Vec<Command>>;
 
     fn get_last_change(&self) -> Option<DateTime<Utc>>;
 
@@ -35,7 +36,7 @@ impl CommandLog for InMemoryCommandLog {
         todo!()
     }
 
-    fn get_commands(&self, _since: DateTime<Utc>) -> Result<Vec<StorageCommand>> {
+    fn get_commands(&self, _since: DateTime<Utc>) -> Result<Vec<Command>> {
         todo!()
     }
 
