@@ -13,7 +13,7 @@ use tokio::task::AbortHandle;
 use tokio::time::timeout;
 
 #[derive(Debug)]
-pub struct HeartbeatCountdown {
+pub struct ElectionCountdown {
     runtime: Arc<Runtime>,
     period: Duration,
     node: Arc<ArcSwap<Node>>,
@@ -22,7 +22,7 @@ pub struct HeartbeatCountdown {
 }
 
 #[async_trait]
-impl Job for HeartbeatCountdown {
+impl Job for ElectionCountdown {
 
     async fn start(&mut self) {
         let (tx, rx) = watch::channel(0u64);
