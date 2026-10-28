@@ -58,12 +58,13 @@ impl JobRegistry {
         Fut: Future<Output = ()> + Send + 'static,
     {
         match self.registered_jobs.get(&job_key) {
-            Some(job) => {
+            Some(job) if !self.launched_jobs.contains_key(&job_key) => {
                 let join_handle = self.runtime.spawn(op(Arc::clone(&job)));
                 if preserve {
                     self.launched_jobs.insert(job_key, join_handle.abort_handle());
                 }
             },
+            Some(_) => warn!("Job already registered for {job_key:?}"),
             None => warn!("No registered job found for {job_key:?}"),
         }
     }
