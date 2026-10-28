@@ -113,10 +113,12 @@ impl ClusterClient {
     where RemCall: AsyncFn(&RemoteNode, &Req) -> Resp,
           SuccessPred: Fn(&Resp) -> bool
     {
+        // remote_nodes should contain all cluster nodes excluding the current
         self.broadcast_call(request, remote_call_fn, success_predicate,
-                |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER > self.remote_nodes.len()).await
+                |successful_requests| successful_requests * Self::QUORUM_MULTIPLIER >= self.remote_nodes.len()).await
     }
 
+    // FIXME Response should be a Result<Resp, Error>, so in case http call failed, it won't be classified as succeeded
     async fn broadcast_call<Req: Debug, Resp: NodeAware, RemCall, SuccessPred, QuorumPred>(&self, request: &Req,
             remote_call_fn: RemCall, success_criteria: SuccessPred, quorum_predicate: QuorumPred)
             -> Result<HashMap<NodeId, Resp>>

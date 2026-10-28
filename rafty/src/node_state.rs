@@ -8,7 +8,7 @@ use crate::storage::Storage;
 use crate::transport::model::command::Command;
 use crate::transport::model::common::{CommitRequest, HeartbeatRequest};
 use crate::transport::model::vote::{VoteRequest, VoteResponse};
-use crate::transport::model::{ClusterMessage, Key};
+use crate::transport::model::{ClusterMessage, Key, NodeAware};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ pub mod states {
     use crate::node_state::NodeId;
     use std::fmt::Debug;
 
-    pub(super) trait StateOption: Debug + Send + Sync + 'static{}
+    pub(super) trait StateOption: Debug {}
 
     #[derive(Debug, Clone, Default)]
     pub struct Follower {
@@ -123,6 +123,14 @@ impl<S: StateOption> State<S> {
         }
     }
 
+    pub fn node_id(&self) -> &NodeId {
+        &self.node_id
+    }
+
+    pub fn term(&self) -> u64 {
+        self.term.load(Ordering::Relaxed)
+    }
+
     #[inline(always)]
     fn _into<IntoState: StateOption>(self, state: IntoState) -> State<IntoState> {
         State {
@@ -147,9 +155,8 @@ impl<S: StateOption> State<S> {
                 let result = self.log.push(command_to_log);
                 if result.is_ok() {
                     // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead
-                    // let command = Wrapper::<Command>::into(command);
-                    let command = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
-                    nodes_notification_fn(self.cluster_nodes.as_ref(), command).await?
+                    let message = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
+                    nodes_notification_fn(self.cluster_nodes.as_ref(), message).await?
                 }
                 result
             },
@@ -204,7 +211,10 @@ impl State<Follower> {
         Ok(self._vote(proposed_term))
     }
 
-    pub fn process_heartbeat(&self, request: HeartbeatRequest) -> Result<()> {
+    pub fn process_heartbeat(&mut self, request: ClusterMessage<HeartbeatRequest>) -> Result<()> {
+        if self.state.leader_id.is_none() {
+            self.set_leader(request.node_id().clone())
+        }
         let (Some(node_last_entry), Some(leader_last_entry)) = (self.log.get_last_change(), request.last_change) else {
             return Ok(())
         };
@@ -238,6 +248,8 @@ impl State<Follower> {
 
 }
 
+const MAX_TIMEOUT: Duration = Duration::from_millis(500);
+
 impl State<Candidate> {
 
     pub fn into_leader(self) -> State<Leader> {
@@ -249,11 +261,12 @@ impl State<Candidate> {
     }
 
     pub async fn start_election(self) -> Result<State<Leader>, State<Follower>> {
+        self.term.fetch_add(1, Ordering::Relaxed);
         let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), VoteRequest);
-        let result = self.cluster_nodes.ask_for_vote(request).await;
+        let result = timeout(MAX_TIMEOUT, self.cluster_nodes.ask_for_vote(request)).await;
         match result {
-            Ok(_) => Ok(self.into_leader()),
-            Err(_) => Err(self._into(Follower { leader_id: None })),
+            Ok(Ok(_)) => Ok(self.into_leader()),
+            Ok(Err(_)) | Err(_) => Err(self._into(Follower { leader_id: None })),
         }
     }
 
