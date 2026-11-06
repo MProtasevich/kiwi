@@ -7,7 +7,7 @@ pub trait NodeAware {
     fn node_id(&self) -> &NodeId;
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Key(Arc<str>);
 
 impl Key {
@@ -16,13 +16,13 @@ impl Key {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Metadata {
     pub node_id: NodeId,
     pub term: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClusterMessage<T> {
     pub metadata: Metadata,
     pub payload: T,
@@ -60,23 +60,23 @@ pub mod common {
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct HeartbeatRequest {
         pub timestamp: DateTime<Utc>,
-        pub last_change: Option<DateTime<Utc>>,
+        pub last_change: DateTime<Utc>,
     }
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct HeartbeatResponse {
         pub timestamp: DateTime<Utc>,
     }
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct CommitRequest {
         pub key: Key,
     }
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct CommitResponse {
         pub key: Key,
     }
@@ -93,7 +93,7 @@ pub mod command {
         fn timestamp(&self) -> Option<DateTime<Utc>>;
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub enum Command {
         Set(Key, Payload, DateTime<Utc>), // FIXME wrapping with Arc may have sense
         Commit(Key, DateTime<Utc>),
@@ -124,7 +124,7 @@ pub mod command {
         }
     }
 
-    #[derive(Debug, Serialize, Deserialize, Clone)]
+    #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
     pub enum Payload {
         Integer(i64),
         Float(f64),
@@ -139,7 +139,7 @@ pub mod log {
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct LogReplicationRequest {
         pub cursor_from: CursorId,
         pub chunk_size: usize,
@@ -147,7 +147,7 @@ pub mod log {
 
     pub type CursorId = DateTime<Utc>;
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct LogReplicationResponse {
         pub cursor_id: CursorId,
         pub commands: Vec<Command>,
@@ -157,10 +157,10 @@ pub mod log {
 pub mod vote {
     use serde::{Deserialize, Serialize};
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct VoteRequest;
 
-    #[derive(Debug, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     pub struct VoteResponse {
         pub voted: bool,
     }
