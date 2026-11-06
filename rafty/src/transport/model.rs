@@ -83,7 +83,6 @@ pub mod common {
 }
 
 pub mod command {
-    use crate::payload::CommandType;
     use crate::transport::model::Key;
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Serialize};
@@ -91,6 +90,13 @@ pub mod command {
 
     pub trait TimeAware {
         fn timestamp(&self) -> Option<DateTime<Utc>>;
+    }
+
+    #[derive(Debug)]
+    pub enum CommandType {
+        Read,
+        Write,
+        Modify,
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,10 +121,10 @@ pub mod command {
     impl TimeAware for Command {
         fn timestamp(&self) -> Option<DateTime<Utc>> {
             match self {
-                Command::Set(_, _, timestamp) => Some(timestamp.clone()),
-                Command::Update(timestamp) => Some(timestamp.clone()),
-                Command::Commit(_, timestamp) => Some(timestamp.clone()),
-                Command::Delete(_, timestamp) => Some(timestamp.clone()),
+                Command::Set(_, _, timestamp) => Some(*timestamp),
+                Command::Update(timestamp) => Some(*timestamp),
+                Command::Commit(_, timestamp) => Some(*timestamp),
+                Command::Delete(_, timestamp) => Some(*timestamp),
                 Command::Get(_) => None,
             }
         }
