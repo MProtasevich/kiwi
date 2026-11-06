@@ -1,14 +1,33 @@
 use crate::transport::model::Key;
+use crate::transport::model::command::Payload;
 use chrono::{DateTime, Utc};
 use std::fmt::Debug;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Integer(i64),
     Float(f64),
     String(String),
     DateTime(DateTime<Utc>),
     Object, // reserved for future implementation
+}
+
+impl From<Payload> for Value {
+    fn from(payload: Payload) -> Self {
+        match payload {
+            Payload::Integer(value) => Value::Integer(value),
+            Payload::Float(value) => Value::Float(value),
+            Payload::String(value) => Value::String(value.to_string()),
+            Payload::DateTime(value) => Value::DateTime(value),
+            Payload::Object => Value::Object,
+        }
+    }
+}
+
+impl From<&Payload> for Value {
+    fn from(payload: &Payload) -> Self {
+        Value::from(payload.clone())
+    }
 }
 
 #[derive(Debug)]
