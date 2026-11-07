@@ -4,10 +4,10 @@
 # it; membership changes after bootstrap are replicated through the Raft log and this
 # file is not consulted again.
 #
-# `host` values are DNS names on the Docker Compose network (`node1`, `node2`, ...).
-# Never advertise `localhost` or `0.0.0.0`: inside a container those do not refer to
-# this node. For a local `cargo run`, replace the names with `127.0.0.1` and keep the
-# ports distinct.
+# `nodes` maps a stable node id to the address other nodes dial. Addresses are DNS
+# names on the Docker Compose network (`node1`, `node2`, ...). Never advertise
+# `localhost` or `0.0.0.0`: inside a container those do not refer to this node. For a
+# local `cargo run`, replace the names with `127.0.0.1` and keep the ports distinct.
 config:
   cluster-id: rafty-dev
   current-node: node1
@@ -22,12 +22,6 @@ config:
   # `true` only when forming the cluster for the first time.
   bootstrap: true
   nodes:
-    - node1:
-        host: node1
-        port: 1001
-    - node2:
-        host: node2
-        port: 1002
-    - node3:
-        host: node3
-        port: 1003
+    node1: "node1:1001"
+    node2: "node2:1002"
+    node3: "node3:1003"

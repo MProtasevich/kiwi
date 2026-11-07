@@ -40,6 +40,14 @@ impl std::fmt::Display for NodeId {
     }
 }
 
+impl std::str::FromStr for NodeId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::new(value))
+    }
+}
+
 pub mod states {
     use crate::node_state::NodeId;
     use std::fmt::Debug;

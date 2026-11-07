@@ -34,7 +34,7 @@ cargo test -p rafty -- --ignored
 `cargo test --workspace` additionally builds `kiwi`'s HTTP test target, which is still
 scaffold code and does not compile against the current wire types.
 
-Result for the maintained `rafty` suite: **100 passing, 0 failing, 2 ignored**.
+Result for the maintained `rafty` suite: **101 passing, 0 failing, 2 ignored**.
 `kiwi`'s HTTP test target is still scaffold code and is not part of that count.
 
 ## Known defects encoded as `#[ignore]` tests
@@ -71,10 +71,12 @@ Each test below asserts the *correct* behavior and currently fails. Remove the
 
 Bootstrap and membership have their own coverage:
 
-- [`rafty/src/config.rs`](rafty/src/config.rs) parses and validates `rafty/config.yaml`:
-  `150ms` durations, unique addresses, wildcard advertise rejection, bootstrap-node
-  presence, `election-timeout > heartbeat-interval`, and joiner configs that are absent
-  from the node list.
+- [`rafty/src/config.rs`](rafty/src/config.rs) deserializes `rafty/config.yaml` directly
+  into `Config` and validates it: `humantime` durations (`150ms`, `2s`),
+  `http::uri::Authority` addresses, unique addresses, wildcard advertise rejection,
+  bootstrap-node presence, `election-timeout > heartbeat-interval`, and joiner configs
+  that are absent from the node list. `ConfigOverrides` is covered separately; the
+  `clap` flags/env mapping is exercised through `kiwi --help` and the binary smoke test.
 - [`rafty/src/cluster.rs`](rafty/src/cluster.rs) applies `AddLearner`/`Promote`/`Remove`
   entries, rejects duplicate addresses, last-voter removal, stale snapshots and entry
   gaps, and journals committed entries.
