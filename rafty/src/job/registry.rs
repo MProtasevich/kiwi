@@ -10,7 +10,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-const AVAILABLE_JOBS_COUNT: usize = 3;
+const AVAILABLE_JOBS_COUNT: usize = 4;
 // const AVAILABLE_JOBS_COUNT: usize = std::mem::variant_count::<JobKey>();
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
@@ -18,6 +18,7 @@ pub enum JobKey {
     HeartbeatPush,
     HeartbeatCountdown,
     LogReplication,
+    Join,
 }
 
 /// What the registry should do with a job after one `Job::execute` call.

@@ -8,11 +8,14 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use rafty::cluster::{
+    ClusterConfiguration, ClusterId, ClusterMember, ClusterMembership, NodeAddress,
+};
 use rafty::job::registry::JobRegistry;
 use rafty::log::CommandLog;
 use rafty::node_state::{NodeId, State, states::Follower};
 use rafty::remote_node::{
-    CandidateClient, ClusterClient, FollowerClient, LeaderClient, RemoteNode,
+    CandidateClient, ClusterClient, FollowerClient, JoinClient, LeaderClient, RemoteNode,
 };
 use rafty::storage::Storage;
 use rafty::transport::model::ClusterMessage;
@@ -22,6 +25,9 @@ use rafty::transport::model::common::{
     CommitRequest, CommitResponse, HeartbeatRequest, HeartbeatResponse,
 };
 use rafty::transport::model::log::{LogReplicationRequest, LogReplicationResponse};
+use rafty::transport::model::membership::{
+    ConfigurationAck, ConfigurationBroadcast, JoinRequest, JoinResponse,
+};
 use rafty::transport::model::vote::{VoteRequest, VoteResponse};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -235,6 +241,8 @@ pub struct Counters {
     pub log_requests: AtomicUsize,
     pub payloads: AtomicUsize,
     pub commits: AtomicUsize,
+    pub configurations: AtomicUsize,
+    pub joins: AtomicUsize,
     terms: Mutex<Vec<u64>>,
 }
 
@@ -253,12 +261,15 @@ impl Counters {
             + self.log_requests.load(Ordering::SeqCst)
             + self.payloads.load(Ordering::SeqCst)
             + self.commits.load(Ordering::SeqCst)
+            + self.configurations.load(Ordering::SeqCst)
+            + self.joins.load(Ordering::SeqCst)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct Behavior {
     pub voted: bool,
+    pub accepts_configuration: bool,
     pub delay: Option<Duration>,
     pub hang: bool,
 }
@@ -267,6 +278,7 @@ impl Default for Behavior {
     fn default() -> Self {
         Self {
             voted: true,
+            accepts_configuration: true,
             delay: None,
             hang: false,
         }
@@ -288,6 +300,13 @@ impl Behavior {
     pub fn hanging() -> Self {
         Self {
             hang: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn rejecting_configuration() -> Self {
+        Self {
+            accepts_configuration: false,
             ..Self::default()
         }
     }
@@ -395,6 +414,55 @@ impl LeaderClient for Recorder {
             HeartbeatResponse {
                 timestamp: Utc::now(),
             },
+        )
+    }
+
+    async fn install_configuration(
+        &self,
+        request: &ClusterMessage<ConfigurationBroadcast>,
+    ) -> ClusterMessage<ConfigurationAck> {
+        self.counters.configurations.fetch_add(1, Ordering::SeqCst);
+        self.counters.record_term(request.metadata.term);
+        self.pause().await;
+        let payload = if self.behavior.accepts_configuration {
+            ConfigurationAck::accepted(request.payload.configuration.index)
+        } else {
+            ConfigurationAck::rejected(0, "rejected by test double")
+        };
+        ClusterMessage::new(self.id.clone(), request.metadata.term, payload)
+    }
+}
+
+/// A transport that answers join requests with a canned response.
+#[derive(Debug)]
+pub struct JoinResponder {
+    pub id: NodeId,
+    pub response: JoinResponse,
+    pub calls: AtomicUsize,
+}
+
+impl JoinResponder {
+    pub fn new(id: &str, response: JoinResponse) -> Arc<Self> {
+        Arc::new(Self {
+            id: node_id(id),
+            response,
+            calls: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl JoinClient for JoinResponder {
+    async fn join(&self, request: &ClusterMessage<JoinRequest>) -> ClusterMessage<JoinResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        ClusterMessage::new(
+            self.id.clone(),
+            request.metadata.term,
+            self.response.clone(),
         )
     }
 }
@@ -529,4 +597,72 @@ pub fn scripted_client(leader: &str, scripted: Arc<ScriptedFollower>) -> Arc<Clu
         Arc::new(nodes),
         Duration::from_millis(40),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Cluster configuration helpers
+// ---------------------------------------------------------------------------
+
+pub fn cluster_id(value: &str) -> ClusterId {
+    ClusterId::new(value).unwrap()
+}
+
+pub fn address(value: &str) -> NodeAddress {
+    value.parse().unwrap()
+}
+
+pub fn configuration(
+    cluster: &str,
+    index: u64,
+    members: &[(&str, &str, bool)],
+) -> ClusterConfiguration {
+    ClusterConfiguration::new(
+        cluster_id(cluster),
+        index,
+        members.iter().map(|(id, addr, voter)| {
+            if *voter {
+                ClusterMember::voter(node_id(id), address(addr))
+            } else {
+                ClusterMember::learner(node_id(id), address(addr))
+            }
+        }),
+    )
+    .unwrap()
+}
+
+/// Builds a client whose membership is explicit rather than derived from peer ids.
+pub fn cluster_client_with_configuration(
+    local: &str,
+    configuration: ClusterConfiguration,
+    peers: &[(&str, Arc<Counters>, Behavior)],
+) -> Arc<ClusterClient> {
+    let mut nodes = HashMap::new();
+    for (id, counters, behavior) in peers {
+        nodes.insert(
+            node_id(id),
+            remote_node(id, Arc::clone(counters), *behavior),
+        );
+    }
+    let membership = Arc::new(ClusterMembership::new(configuration));
+    Arc::new(ClusterClient::with_membership(
+        node_id(local),
+        membership,
+        Arc::new(nodes),
+        Duration::from_millis(40),
+    ))
+}
+
+/// A remote node whose join client is driven by `responder`.
+pub fn joinable_remote(
+    id: &str,
+    counters: Arc<Counters>,
+    behavior: Behavior,
+    responder: Arc<JoinResponder>,
+) -> RemoteNode {
+    let recorder = Arc::new(Recorder {
+        id: node_id(id),
+        counters,
+        behavior,
+    });
+    RemoteNode::with_join(recorder.clone(), recorder.clone(), recorder, responder)
 }

@@ -1,0 +1,6 @@
+target
+.git
+.gitignore
+.idea
+.cargo-home
+**/.DS_Store

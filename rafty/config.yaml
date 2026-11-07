@@ -1,0 +1,33 @@
+# Static bootstrap configuration.
+#
+# This file describes the *initial* state of the cluster. Every node is started with
+# it; membership changes after bootstrap are replicated through the Raft log and this
+# file is not consulted again.
+#
+# `host` values are DNS names on the Docker Compose network (`node1`, `node2`, ...).
+# Never advertise `localhost` or `0.0.0.0`: inside a container those do not refer to
+# this node. For a local `cargo run`, replace the names with `127.0.0.1` and keep the
+# ports distinct.
+config:
+  cluster-id: rafty-dev
+  current-node: node1
+  # Bind address. `0.0.0.0` is required inside a container.
+  listen: 0.0.0.0:1001
+  # Address other nodes use to reach this one. Must be in `nodes` below.
+  advertise: node1:1001
+  request-timeout: 2s
+  heartbeat-interval: 150ms
+  # Must be greater than heartbeat-interval.
+  election-timeout: 1s
+  # `true` only when forming the cluster for the first time.
+  bootstrap: true
+  nodes:
+    - node1:
+        host: node1
+        port: 1001
+    - node2:
+        host: node2
+        port: 1002
+    - node3:
+        host: node3
+        port: 1003

@@ -1,0 +1,118 @@
+# Reference three-node cluster plus an optional joiner.
+#
+#   docker compose up --build
+#   docker compose --profile join up --build
+#
+# Every node mounts the same static bootstrap file; per-node identity and advertised
+# address come from environment overrides. `node4` uses the joiner file and is absent
+# from the bootstrap list, so it is admitted at runtime through the join RPC.
+#
+# Notes:
+# * Service names (`node1`, `node2`, ...) are the DNS names on the `raftnet` network.
+#   Never advertise `localhost` or `0.0.0.0` inside a container.
+# * Do not add `depends_on` between nodes: a Raft cluster needs a majority, not every
+#   node, and start order is not a correctness property.
+# * Volumes are mounted at /data so a restarted node keeps its identity and log.
+
+name: rafty
+
+x-node: &node
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: rafty/kiwi:dev
+  restart: unless-stopped
+  networks:
+    - raftnet
+  volumes:
+    - type: volume
+      target: /data
+
+networks:
+  raftnet:
+    driver: bridge
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+
+services:
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      RAFTY_NODE_ID: node1
+      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
+      RAFTY_CONFIG: /etc/rafty/config.yaml
+      RAFTY_CLUSTER_ID: rafty-dev
+      RAFTY_LISTEN: 0.0.0.0:1001
+      RAFTY_ADVERTISE: node1:1001
+      RAFTY_BOOTSTRAP: "true"
+      RUST_LOG: info
+    volumes:
+      - ./rafty/config.yaml:/etc/rafty/config.yaml:ro
+      - node1-data:/data
+    ports:
+      - "8001:8000"
+      - "1001:1001"
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      RAFTY_NODE_ID: node2
+      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
+      RAFTY_CONFIG: /etc/rafty/config.yaml
+      RAFTY_CLUSTER_ID: rafty-dev
+      RAFTY_LISTEN: 0.0.0.0:1002
+      RAFTY_ADVERTISE: node2:1002
+      RAFTY_BOOTSTRAP: "true"
+      RUST_LOG: info
+    volumes:
+      - ./rafty/config.yaml:/etc/rafty/config.yaml:ro
+      - node2-data:/data
+    ports:
+      - "8002:8000"
+      - "1002:1002"
+
+  node3:
+    <<: *node
+    hostname: node3
+    environment:
+      RAFTY_NODE_ID: node3
+      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
+      RAFTY_CONFIG: /etc/rafty/config.yaml
+      RAFTY_CLUSTER_ID: rafty-dev
+      RAFTY_LISTEN: 0.0.0.0:1003
+      RAFTY_ADVERTISE: node3:1003
+      RAFTY_BOOTSTRAP: "true"
+      RUST_LOG: info
+    volumes:
+      - ./rafty/config.yaml:/etc/rafty/config.yaml:ro
+      - node3-data:/data
+    ports:
+      - "8003:8000"
+      - "1003:1003"
+
+  # Optional: a node that joins the already-running cluster at runtime.
+  node4:
+    <<: *node
+    profiles: ["join"]
+    hostname: node4
+    environment:
+      RAFTY_NODE_ID: node4
+      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
+      RAFTY_CONFIG: /etc/rafty/config.joiner.yaml
+      RAFTY_CLUSTER_ID: rafty-dev
+      RAFTY_LISTEN: 0.0.0.0:1004
+      RAFTY_ADVERTISE: node4:1004
+      RAFTY_BOOTSTRAP: "false"
+      RUST_LOG: info
+    volumes:
+      - ./rafty/config.joiner.yaml:/etc/rafty/config.joiner.yaml:ro
+      - node4-data:/data
+    ports:
+      - "8004:8000"
+      - "1004:1004"
