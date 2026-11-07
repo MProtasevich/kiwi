@@ -4,8 +4,7 @@ use crate::log::CommandLog;
 use crate::node_state::states::{Candidate, Follower, Leader, StateOption};
 use crate::remote_node::ClusterClient;
 use crate::storage::Storage;
-use crate::transport::model::command::Command;
-use crate::transport::model::command::CommandType;
+use crate::transport::model::command::{Command, CommandType};
 use crate::transport::model::common::{CommitRequest, HeartbeatRequest};
 use crate::transport::model::vote::{VoteRequest, VoteResponse};
 use crate::transport::model::{ClusterMessage, Key, NodeAware};
@@ -159,10 +158,12 @@ impl<S: StateOption> State<S> {
         match command.get_type() {
             CommandType::Read => Ok(()),
             CommandType::Write | CommandType::Modify => {
-                // FIXME [RAFTY-8] get rid of cloning
+                // let request = Wrapper::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
+                // FIXME get rid of cloning
                 let command_to_log = command.clone();
                 let result = self.log.push(command_to_log);
                 if result.is_ok() {
+                    // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead
                     let message = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), command);
                     nodes_notification_fn(self.cluster_nodes.as_ref(), message).await?
                 }
@@ -174,8 +175,9 @@ impl<S: StateOption> State<S> {
     #[inline(always)]
     async fn _commit(&self, key: Key, nodes_notification_fn: impl AsyncFn(&ClusterClient, ClusterMessage<CommitRequest>) -> Result<()>) -> Result<()> {
         let request = ClusterMessage::new(self.node_id.clone(), self.term.load(Ordering::Relaxed), CommitRequest { key: key.clone() });
-        // FIXME [RAFTY-9] Send result to another thread/job, via mspc channel instead
+        // FIXME Send result to another thread, which processes heartbeats, via mspc channel instead
         nodes_notification_fn(self.cluster_nodes.as_ref(), request).await?;
+        // self.cluster_nodes.commit(&key).await?;
         let payload = self.log.commit(key.clone())?;
         self.storage.push(key, payload)?;
         Ok(())
@@ -198,6 +200,8 @@ impl<S: StateOption> State<S> {
 }
 
 impl State<Follower> {
+
+    const CHUNK_SIZE: usize = 1024;
 
     pub fn into_candidate(self) -> State<Candidate> {
         self._into(Candidate)
@@ -229,7 +233,13 @@ impl State<Follower> {
         }
         let node_last_entry = self.log.get_last_change().unwrap_or_default();
         if node_last_entry < request.last_change {
-            let replication = LogReplicationJob::new();
+            let cluster_nodes = Arc::clone(&self.cluster_nodes);
+            let log = Arc::clone(&self.log);
+            let term = Arc::clone(&self.term);
+            let Some(leader_id) = self.state.leader_id.clone() else {
+                return Err(anyhow!("Unexpected state. Leader ID is None"));
+            };
+            let replication = LogReplicationJob::new(cluster_nodes, log, node_last_entry, term, self.node_id.clone(), leader_id, Self::CHUNK_SIZE);
             self.job_registry.register_and_start(replication);
         }
         Ok(())

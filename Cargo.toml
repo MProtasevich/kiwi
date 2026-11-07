@@ -14,7 +14,7 @@ members = [
 anyhow = { version = "1.0" }
 async-trait = "0.1"
 arc-swap = { version = "1" }
-chrono = { version = "0.4" , features = ["serde"] }
+chrono = { version = "0.4" , features = ["serde"]}
 dashmap = { version = "6.2" }
 futures = { version = "0.3" }
 log = "0.4"
