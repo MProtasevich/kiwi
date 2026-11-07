@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use log::warn;
 use std::fmt::Debug;
+use std::range::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
@@ -35,8 +36,11 @@ pub enum Trigger {
     Once,
     /// Call every `period`; the first call happens immediately.
     Every(Duration),
-    /// Call once after `period` without a reset; `reset` restarts the timer.
-    AfterQuiet(Duration),
+    /// Call once after a random delay uniformly drawn from range;
+    /// `reset` restarts the timer with a fresh delay.
+    ///
+    /// The bounds are swapped when `min > max`, so the range is always valid.
+    AfterQuiet(RangeInclusive<Duration>),
 }
 
 /// A unit of work driven by the registry.
@@ -77,22 +81,16 @@ impl Executor {
     }
 }
 
-#[derive(Debug)]
-struct Registration {
-    trigger: Trigger,
-    job: Arc<dyn Job>,
-}
-
 /// Everything needed to cancel a running job. Owned by the registry, never by the job.
 #[derive(Debug)]
 struct Running {
-    resets: watch::Sender<u64>,
+    resets: Option<watch::Sender<u64>>,
     handle: JoinHandle<()>,
 }
 
 #[derive(Debug)]
 pub struct JobRegistry {
-    registered_jobs: DashMap<JobKey, Registration>,
+    registered_jobs: DashMap<JobKey, Arc<dyn Job>>,
     running_jobs: DashMap<JobKey, Running>,
     executor: Executor,
 }
@@ -133,11 +131,11 @@ impl JobRegistry {
             .is_some_and(|running| !running.handle.is_finished())
     }
 
-    pub fn register(&self, job: impl Job) {
-        self.registered_jobs.insert(job.key(), Registration { trigger: job.trigger(), job: Arc::new(job) });
+    pub fn register(&self, job: Arc<dyn Job>) {
+        self.registered_jobs.insert(job.key(), job);
     }
 
-    pub fn register_and_start(&self, job: impl Job) {
+    pub fn register_and_start(&self, job: Arc<dyn Job>) {
         let job_key = job.key();
         self.register(job);
         self.start(job_key);
@@ -146,9 +144,9 @@ impl JobRegistry {
     pub fn start(&self, job_key: JobKey) {
         let registration = self.registered_jobs
             .get(&job_key)
-            .map(|entry| (entry.trigger, Arc::clone(&entry.job)));
+            .map(|job| Arc::clone(&*job));
 
-        let Some((trigger, job)) = registration else {
+        let Some(job) = registration else {
             warn!("No registered job found for {job_key:?}");
             return;
         };
@@ -156,27 +154,30 @@ impl JobRegistry {
         match self.running_jobs.entry(job_key) {
             // A job that returned or was aborted can be started again.
             Entry::Occupied(mut slot) if slot.get().handle.is_finished() => {
-                slot.insert(self.spawn_driver(trigger, job));
+                slot.insert(self.spawn_driver(job));
             }
             Entry::Occupied(_) => warn!("Job already running for {job_key:?}"),
             Entry::Vacant(slot) => {
-                slot.insert(self.spawn_driver(trigger, job));
+                slot.insert(self.spawn_driver(job));
             }
         }
     }
 
-    /// Restarts the `AfterQuiet` deadline of a running job. Ignored by other triggers.
+    /// Restarts the deadline of a running job. Works exclusively for `AfterQuiet`.
+    /// Ignored by other triggers.
     pub fn reset(&self, job_key: JobKey) {
-        match self.running_jobs.get(&job_key) {
-            Some(running) => {
-                let (next, _) = (*running.resets.borrow()).overflowing_add(1);
-                let _ = running.resets.send(next);
+        let sender = self.running_jobs.get(&job_key)
+            .and_then(|job_control| job_control.resets.clone());
+        match sender {
+            Some(tx) => {
+                let (next, _) = (*tx.borrow()).overflowing_add(1);
+                let _ = tx.send(next);
             }
             None => warn!("No running job found for {job_key:?}"),
         }
     }
 
-    /// Stops a job: unregisters it and aborts its driver task.
+    /// Stops a job: unregisters it and aborts its task.
     ///
     /// Returns once the task has been dropped, so no job code can run after this call.
     pub async fn stop(&self, job_key: JobKey) {
@@ -188,23 +189,31 @@ impl JobRegistry {
         };
     }
 
-    fn spawn_driver(&self, trigger: Trigger, job: Arc<dyn Job>) -> Running {
-        let (reset_tx, reset_rx) = watch::channel(0u64);
+    fn spawn_driver(&self, job: Arc<dyn Job>) -> Running {
+        let (reset_tx, reset_rx) = match job.trigger() {
+            Trigger::Once | Trigger::Every(_) => (None, None),
+            Trigger::AfterQuiet(_) => {
+                let (tx, rx) = watch::channel(0u64);
+                (Some(tx), Some(rx))
+            },
+        };
 
-        let handle = self.executor.spawn(drive(trigger, job, reset_rx));
+        let handle = self.executor.spawn(launch(job, reset_rx));
 
         Running { resets: reset_tx, handle }
     }
 
 }
 
-async fn drive(trigger: Trigger, job: Arc<dyn Job>, mut resets: watch::Receiver<u64>) {
-    match trigger {
+async fn launch(job: Arc<dyn Job>, resets: Option<watch::Receiver<u64>>) {
+    use tokio::time;
+
+    match job.trigger() {
         Trigger::Once => {
             job.execute().await;
         }
         Trigger::Every(period) => {
-            let mut ticker = tokio::time::interval(period);
+            let mut ticker = time::interval(period);
             loop {
                 ticker.tick().await;
                 if job.execute().await == Control::Done {
@@ -212,19 +221,22 @@ async fn drive(trigger: Trigger, job: Arc<dyn Job>, mut resets: watch::Receiver<
                 }
             }
         }
-        Trigger::AfterQuiet(period) => {
-            let deadline = tokio::time::sleep(period);
+        Trigger::AfterQuiet(range) => {
+            let old_range: std::ops::RangeInclusive<_> = range.into();
+            let mut resets = resets.expect("Receiver is missing for AfterQuiet job");
+            let deadline = time::sleep(rand::random_range(old_range.clone()));
             tokio::pin!(deadline);
             loop {
+                let old_range = old_range.clone();
                 tokio::select! {
                     _ = resets.changed() => {
-                        deadline.as_mut().reset(tokio::time::Instant::now() + period);
+                        deadline.as_mut().reset(time::Instant::now() + rand::random_range(old_range));
                     }
                     _ = &mut deadline => {
                         if job.execute().await == Control::Done {
                             break;
                         }
-                        deadline.as_mut().reset(tokio::time::Instant::now() + period);
+                        deadline.as_mut().reset(time::Instant::now() + rand::random_range(old_range));
                     }
                 }
             }

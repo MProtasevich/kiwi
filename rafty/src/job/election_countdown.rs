@@ -9,19 +9,30 @@ use anyhow::Result;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use log::trace;
+use std::range::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug)]
 pub struct ElectionCountdownJob {
-    period: Duration,
+    range: RangeInclusive<Duration>,
     node: Arc<ArcSwap<Node>>,
 }
 
 impl ElectionCountdownJob {
 
+    /// Creates a job with a fixed election timeout.
     pub fn new(period: Duration, node: Arc<ArcSwap<Node>>) -> Self {
-        Self { period, node }
+        Self::with_timeout_range((period..=period).into(), node)
+    }
+
+    /// Creates a job whose election timeout is re-drawn from `range`
+    /// on every reset, as Raft recommends to avoid split votes.
+    pub fn with_timeout_range(range: RangeInclusive<Duration>, node: Arc<ArcSwap<Node>>) -> Self {
+        Self {
+            range,
+            node,
+        }
     }
 
 }
@@ -45,7 +56,7 @@ impl Job for ElectionCountdownJob {
     }
 
     fn trigger(&self) -> Trigger {
-        Trigger::AfterQuiet(self.period)
+        Trigger::AfterQuiet(self.range)
     }
 
 }
@@ -60,7 +71,7 @@ async fn start_election(node: &ArcSwap<Node>) -> Result<()> {
     let candidate_state = Arc::clone(&cloned_state);
     let state = cloned_state.try_candidate()?;
     let election_result = state.start_election().await;
-    let failed = election_result.is_err();
+    let election_won = election_result.is_ok();
     let node_after_election = match election_result {
         Ok(state) => Node::Leader(state),
         Err(state) => Node::Follower(state),
@@ -68,8 +79,5 @@ async fn start_election(node: &ArcSwap<Node>) -> Result<()> {
     // Have to use arc-swap instead of Arc<RwLock<T>> due to RwLockReadGuard is !Send
     // and can't be shared between threads
     node.compare_and_swap(&candidate_state, Arc::new(node_after_election));
-    if failed {
-        anyhow::bail!("election failed");
-    }
-    Ok(())
+    if election_won { Ok(()) } else { Err(anyhow::anyhow!("election failed")) }
 }

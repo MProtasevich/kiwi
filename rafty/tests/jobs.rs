@@ -33,7 +33,7 @@ fn follower_with_peer(peer: &Arc<Counters>, behavior: Behavior) -> State<Followe
 }
 
 fn start_countdown(registry: &JobRegistry, node: Arc<ArcSwap<Node>>) {
-    registry.register_and_start(ElectionCountdownJob::new(PERIOD, node));
+    registry.register_and_start(Arc::new(ElectionCountdownJob::new(PERIOD, node)));
 }
 
 #[tokio::test(start_paused = true)]
@@ -67,6 +67,33 @@ async fn countdown_starts_an_election_after_the_period() {
     assert_eq!(peer.votes.load(Ordering::SeqCst), 1);
     assert!(node.load().try_leader().is_ok(), "a successful election must replace the follower state");
     assert!(!registry.is_running(JobKey::HeartbeatCountdown), "a leader stops the countdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn countdown_honours_the_timeout_range() {
+    const MIN_TIMEOUT: Duration = Duration::from_millis(100);
+    const MAX_TIMEOUT: Duration = Duration::from_millis(300);
+
+    let peer = Arc::new(Counters::default());
+    let node = swap(follower_with_peer(&peer, Behavior::approve()));
+    let registry = JobRegistry::from_current();
+    registry.register_and_start(Arc::new(ElectionCountdownJob::with_timeout_range(
+        (MIN_TIMEOUT..=MAX_TIMEOUT).into(),
+        node.clone(),
+    )));
+    settle().await;
+
+    tokio::time::advance(MIN_TIMEOUT - Duration::from_millis(1)).await;
+    settle().await;
+    assert_eq!(peer.votes.load(Ordering::SeqCst), 0);
+    assert!(node.load().try_leader().is_err());
+
+    tokio::time::advance(MAX_TIMEOUT - MIN_TIMEOUT + Duration::from_millis(1)).await;
+    settle().await;
+    assert_eq!(peer.votes.load(Ordering::SeqCst), 1);
+    assert!(node.load().try_leader().is_ok());
+
+    registry.stop(JobKey::HeartbeatCountdown).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -174,7 +201,7 @@ async fn heartbeat_polling_sends_on_every_tick() {
     let peer = Arc::new(Counters::default());
     let leader = Arc::new(follower_with_peer(&peer, Behavior::approve()).into_candidate().into_leader());
     let registry = JobRegistry::from_current();
-    registry.register_and_start(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader));
+    registry.register_and_start(Arc::new(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader)));
     settle().await;
     assert_eq!(peer.heartbeats.load(Ordering::SeqCst), 1, "the first tick is immediate");
 
@@ -205,7 +232,7 @@ async fn heartbeat_polling_keeps_running_without_configured_peers() {
     );
 
     let registry = JobRegistry::from_current();
-    registry.register_and_start(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, Arc::new(leader)));
+    registry.register_and_start(Arc::new(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, Arc::new(leader))));
     settle().await;
     tokio::time::advance(Duration::from_millis(300)).await;
     settle().await;
@@ -239,7 +266,7 @@ async fn heartbeat_polling_accepts_a_self_only_peer_set() {
     );
 
     let registry = JobRegistry::from_current();
-    registry.register_and_start(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader));
+    registry.register_and_start(Arc::new(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader)));
     settle().await;
     tokio::time::advance(HEARTBEAT_PERIOD * 3).await;
     settle().await;
@@ -270,7 +297,7 @@ async fn heartbeat_polling_survives_an_unreachable_peer() {
     );
 
     let registry = JobRegistry::from_current();
-    registry.register_and_start(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader));
+    registry.register_and_start(Arc::new(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader)));
     settle().await;
     tokio::time::advance(HEARTBEAT_PERIOD).await;
     settle().await;
@@ -289,7 +316,7 @@ async fn aborting_heartbeat_polling_stops_the_ticks() {
     let peer = Arc::new(Counters::default());
     let leader = Arc::new(follower_with_peer(&peer, Behavior::approve()).into_candidate().into_leader());
     let registry = JobRegistry::from_current();
-    registry.register_and_start(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader));
+    registry.register_and_start(Arc::new(HeartbeatPollingJob::new(HEARTBEAT_PERIOD, leader)));
     settle().await;
 
     registry.stop(JobKey::HeartbeatPush).await;
