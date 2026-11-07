@@ -227,7 +227,6 @@ impl<S: StateOption> State<S> {
 }
 
 impl State<Follower> {
-
     const CHUNK_SIZE: usize = 1024;
 
     pub fn into_candidate(self) -> State<Candidate> {
@@ -274,8 +273,16 @@ impl State<Follower> {
             let Some(leader_id) = self.state.leader_id.clone() else {
                 return Err(anyhow!("Unexpected state. Leader ID is None"));
             };
-            let replication = LogReplicationJob::new(cluster_nodes, log, node_last_entry, term, self.node_id.clone(), leader_id, Self::CHUNK_SIZE);
-            self.job_registry.register_and_start(replication);
+            let replication = LogReplicationJob::new(
+                cluster_nodes,
+                log,
+                node_last_entry,
+                term,
+                self.node_id.clone(),
+                leader_id,
+                Self::CHUNK_SIZE,
+            );
+            self.job_registry.register_and_start(Arc::new(replication));
         }
         Ok(())
     }
