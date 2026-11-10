@@ -46,10 +46,7 @@ impl<T> Deref for ClusterMessage<T> {
 impl<T> ClusterMessage<T> {
     pub fn new(node_id: NodeId, term: u64, payload: T) -> Self {
         Self {
-            metadata: Metadata {
-                node_id,
-                term,
-            },
+            metadata: Metadata { node_id, term },
             payload,
         }
     }
@@ -122,8 +119,10 @@ pub mod command {
         fn timestamp(&self) -> Option<DateTime<Utc>> {
             use self::Command::*;
             match self {
-                Set(_, _, timestamp) | Update(timestamp) | Commit(_, timestamp) | Delete(_, timestamp)
-                    => Some(*timestamp),
+                Set(_, _, timestamp)
+                | Update(timestamp)
+                | Commit(_, timestamp)
+                | Delete(_, timestamp) => Some(*timestamp),
                 Get(_) => None,
             }
         }
@@ -169,5 +168,90 @@ pub mod vote {
     pub struct VoteResponse {
         pub voted: bool,
     }
+}
 
+/// Messages used to discover the cluster and to replicate its configuration.
+///
+/// The distinction matters: a [`JoinRequest`] is an *edge* operation (a node that is
+/// not a member yet asks an existing one for admission), while a
+/// [`ConfigurationBroadcast`] is a *Raft* operation (a committed configuration entry is
+/// replicated to every member).
+pub mod membership {
+    use crate::cluster::{ClusterConfiguration, ClusterId, ConfigurationEntry, NodeAddress};
+    use crate::node_state::NodeId;
+    use serde::{Deserialize, Serialize};
+
+    /// Sent by a node that wants to become a member.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct JoinRequest {
+        /// Must match the receiver's cluster, otherwise the node is rejected.
+        pub cluster_id: ClusterId,
+        pub node_id: NodeId,
+        /// Address the joining node advertises to the rest of the cluster.
+        pub address: NodeAddress,
+    }
+
+    impl JoinRequest {
+        pub fn new(cluster_id: ClusterId, node_id: NodeId, address: NodeAddress) -> Self {
+            Self {
+                cluster_id,
+                node_id,
+                address,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum JoinResponse {
+        /// The leader admitted the node as a learner (or it was already a member).
+        Accepted {
+            leader_id: NodeId,
+            configuration: ClusterConfiguration,
+            /// `false` while the node is still catching up as a learner.
+            voter: bool,
+        },
+        /// This node is not the leader and points at the one that is.
+        Redirect {
+            leader_id: NodeId,
+            address: NodeAddress,
+        },
+        Rejected {
+            reason: String,
+        },
+    }
+
+    /// A committed configuration entry plus the full configuration it produces.
+    ///
+    /// Followers validate the entry against their current configuration and then
+    /// install the snapshot, which makes the update idempotent under retries.
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ConfigurationBroadcast {
+        pub entry: ConfigurationEntry,
+        pub configuration: ClusterConfiguration,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct ConfigurationAck {
+        pub accepted: bool,
+        pub applied_index: u64,
+        pub reason: Option<String>,
+    }
+
+    impl ConfigurationAck {
+        pub fn accepted(applied_index: u64) -> Self {
+            Self {
+                accepted: true,
+                applied_index,
+                reason: None,
+            }
+        }
+
+        pub fn rejected(applied_index: u64, reason: impl Into<String>) -> Self {
+            Self {
+                accepted: false,
+                applied_index,
+                reason: Some(reason.into()),
+            }
+        }
+    }
 }

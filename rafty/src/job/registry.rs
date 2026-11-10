@@ -10,7 +10,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-const AVAILABLE_JOBS_COUNT: usize = 3;
+const AVAILABLE_JOBS_COUNT: usize = 4;
 // const AVAILABLE_JOBS_COUNT: usize = std::mem::variant_count::<JobKey>();
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
@@ -18,6 +18,7 @@ pub enum JobKey {
     HeartbeatPush,
     HeartbeatCountdown,
     LogReplication,
+    Join,
 }
 
 /// What the registry should do with a job after one `Job::execute` call.
@@ -96,7 +97,6 @@ pub struct JobRegistry {
 }
 
 impl JobRegistry {
-
     pub fn new(runtime: Runtime) -> Self {
         Self::with_executor(Executor::Owned(runtime))
     }
@@ -142,7 +142,8 @@ impl JobRegistry {
     }
 
     pub fn start(&self, job_key: JobKey) {
-        let registration = self.registered_jobs
+        let registration = self
+            .registered_jobs
             .get(&job_key)
             .map(|job| Arc::clone(&*job));
 
@@ -166,7 +167,9 @@ impl JobRegistry {
     /// Restarts the deadline of a running job. Works exclusively for `AfterQuiet`.
     /// Ignored by other triggers.
     pub fn reset(&self, job_key: JobKey) {
-        let sender = self.running_jobs.get(&job_key)
+        let sender = self
+            .running_jobs
+            .get(&job_key)
             .and_then(|job_control| job_control.resets.clone());
         match sender {
             Some(tx) => {
@@ -195,14 +198,16 @@ impl JobRegistry {
             Trigger::AfterQuiet(_) => {
                 let (tx, rx) = watch::channel(0u64);
                 (Some(tx), Some(rx))
-            },
+            }
         };
 
         let handle = self.executor.spawn(launch(job, reset_rx));
 
-        Running { resets: reset_tx, handle }
+        Running {
+            resets: reset_tx,
+            handle,
+        }
     }
-
 }
 
 async fn launch(job: Arc<dyn Job>, resets: Option<watch::Receiver<u64>>) {

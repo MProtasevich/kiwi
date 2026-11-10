@@ -1,0 +1,25 @@
+# Configuration for a node that joins an existing cluster at runtime.
+#
+# It lists the current members as *seeds* and has `bootstrap: false`, so it never
+# forms a new cluster on its own. The node contacts the seeds, is admitted as a
+# learner by the leader, and receives the authoritative membership in the join
+# response.
+config:
+  cluster-id: rafty-dev
+  current-node: node4
+  listen: 0.0.0.0:1004
+  advertise: node4:1004
+  request-timeout: 2s
+  heartbeat-interval: 150ms
+  election-timeout: 1s
+  bootstrap: false
+  nodes:
+    - node1:
+        host: node1
+        port: 1001
+    - node2:
+        host: node2
+        port: 1002
+    - node3:
+        host: node3
+        port: 1003
