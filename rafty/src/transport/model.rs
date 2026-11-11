@@ -29,7 +29,6 @@ pub struct ClusterMessage<T> {
 }
 
 impl<T> NodeAware for ClusterMessage<T> {
-    #[inline(always)]
     fn node_id(&self) -> &NodeId {
         &self.metadata.node_id
     }
@@ -46,10 +45,7 @@ impl<T> Deref for ClusterMessage<T> {
 impl<T> ClusterMessage<T> {
     pub fn new(node_id: NodeId, term: u64, payload: T) -> Self {
         Self {
-            metadata: Metadata {
-                node_id,
-                term,
-            },
+            metadata: Metadata { node_id, term },
             payload,
         }
     }
@@ -112,8 +108,8 @@ pub mod command {
         pub fn get_type(&self) -> CommandType {
             match self {
                 Command::Set(_, _, _) | Command::Delete(_, _) => CommandType::Write,
-                Command::Get(_) | Command::Commit(_, _) => CommandType::Read,
-                Command::Update(_) => CommandType::Modify,
+                Command::Get(_) => CommandType::Read,
+                Command::Update(_) | Command::Commit(_, _) => CommandType::Modify,
             }
         }
     }
@@ -122,8 +118,10 @@ pub mod command {
         fn timestamp(&self) -> Option<DateTime<Utc>> {
             use self::Command::*;
             match self {
-                Set(_, _, timestamp) | Update(timestamp) | Commit(_, timestamp) | Delete(_, timestamp)
-                    => Some(*timestamp),
+                Set(_, _, timestamp)
+                | Update(timestamp)
+                | Commit(_, timestamp)
+                | Delete(_, timestamp) => Some(*timestamp),
                 Get(_) => None,
             }
         }
@@ -146,15 +144,15 @@ pub mod log {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct LogReplicationRequest {
-        pub cursor_from: CursorId,
+        pub cursor_from: Cursor,
         pub chunk_size: usize,
     }
 
-    pub type CursorId = DateTime<Utc>;
+    pub type Cursor = DateTime<Utc>;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct LogReplicationResponse {
-        pub cursor_id: CursorId,
+        pub cursor_id: Cursor,
         pub commands: Vec<Command>,
     }
 }
@@ -169,5 +167,4 @@ pub mod vote {
     pub struct VoteResponse {
         pub voted: bool,
     }
-
 }

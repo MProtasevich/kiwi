@@ -4,19 +4,15 @@ use anyhow::Result;
 use std::fmt::Debug;
 
 pub trait Storage: Debug + Send + Sync {
-
     fn push(&self, key: Key, payload: Payload) -> Result<()>;
 
     fn get(&self, key: Key) -> Result<Option<Payload>>;
-
 }
 
 #[derive(Debug, Default)]
-pub struct InMemoryStorage {
-}
+pub struct InMemoryStorage {}
 
 impl Storage for InMemoryStorage {
-
     fn push(&self, key: Key, payload: Payload) -> Result<()> {
         todo!()
     }
@@ -24,5 +20,4 @@ impl Storage for InMemoryStorage {
     fn get(&self, key: Key) -> Result<Option<Payload>> {
         todo!()
     }
-
 }

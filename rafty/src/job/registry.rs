@@ -46,11 +46,9 @@ pub trait Job: Debug + Send + Sync + 'static {
 }
 
 #[derive(Debug)]
-pub struct JobRegistry {
-}
+pub struct JobRegistry {}
 
 impl JobRegistry {
-
     pub fn is_registered(&self, job_key: JobKey) -> bool {
         todo!()
     }
@@ -79,5 +77,4 @@ impl JobRegistry {
     pub async fn stop(&self, job_key: JobKey) {
         todo!()
     }
-
 }

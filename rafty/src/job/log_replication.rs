@@ -17,13 +17,10 @@ impl Job for LogReplicationJob {
     fn trigger(&self) -> Trigger {
         Trigger::Once
     }
-
 }
 
 impl LogReplicationJob {
-
     pub fn new() -> Self {
         Self {}
     }
-
 }
