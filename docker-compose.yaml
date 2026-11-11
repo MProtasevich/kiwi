@@ -28,6 +28,13 @@ x-node: &node
     - type: volume
       target: /data
 
+x-environment: &env
+  RAFTY_HTTP_LISTEN: 0.0.0.0:8000
+  RAFTY_CONFIG: /etc/rafty/config.yaml
+  RAFTY_CLUSTER_ID: rafty-dev
+  RAFTY_BOOTSTRAP: "true"
+  RUST_LOG: info
+
 networks:
   raftnet:
     driver: bridge
@@ -43,14 +50,10 @@ services:
     <<: *node
     hostname: node1
     environment:
+      <<: *env
       RAFTY_NODE_ID: node1
-      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
-      RAFTY_CONFIG: /etc/rafty/config.yaml
-      RAFTY_CLUSTER_ID: rafty-dev
       RAFTY_LISTEN: 0.0.0.0:1001
       RAFTY_ADVERTISE: node1:1001
-      RAFTY_BOOTSTRAP: "true"
-      RUST_LOG: info
     volumes:
       - ./rafty/config.yaml:/etc/rafty/config.yaml:ro
       - node1-data:/data
@@ -62,14 +65,10 @@ services:
     <<: *node
     hostname: node2
     environment:
+      <<: *env
       RAFTY_NODE_ID: node2
-      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
-      RAFTY_CONFIG: /etc/rafty/config.yaml
-      RAFTY_CLUSTER_ID: rafty-dev
       RAFTY_LISTEN: 0.0.0.0:1002
       RAFTY_ADVERTISE: node2:1002
-      RAFTY_BOOTSTRAP: "true"
-      RUST_LOG: info
     volumes:
       - ./rafty/config.yaml:/etc/rafty/config.yaml:ro
       - node2-data:/data
@@ -81,14 +80,10 @@ services:
     <<: *node
     hostname: node3
     environment:
+      <<: *env
       RAFTY_NODE_ID: node3
-      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
-      RAFTY_CONFIG: /etc/rafty/config.yaml
-      RAFTY_CLUSTER_ID: rafty-dev
       RAFTY_LISTEN: 0.0.0.0:1003
       RAFTY_ADVERTISE: node3:1003
-      RAFTY_BOOTSTRAP: "true"
-      RUST_LOG: info
     volumes:
       - ./rafty/config.yaml:/etc/rafty/config.yaml:ro
       - node3-data:/data
@@ -102,14 +97,12 @@ services:
     profiles: ["join"]
     hostname: node4
     environment:
+      <<: *env
       RAFTY_NODE_ID: node4
-      RAFTY_HTTP_LISTEN: 0.0.0.0:8000
       RAFTY_CONFIG: /etc/rafty/config.joiner.yaml
-      RAFTY_CLUSTER_ID: rafty-dev
       RAFTY_LISTEN: 0.0.0.0:1004
       RAFTY_ADVERTISE: node4:1004
       RAFTY_BOOTSTRAP: "false"
-      RUST_LOG: info
     volumes:
       - ./rafty/config.joiner.yaml:/etc/rafty/config.joiner.yaml:ro
       - node4-data:/data

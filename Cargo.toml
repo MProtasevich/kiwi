@@ -15,8 +15,11 @@ anyhow = { version = "1.0" }
 async-trait = "0.1"
 arc-swap = { version = "1" }
 chrono = { version = "0.4" , features = ["serde"]}
+clap = { version = "4", features = ["derive", "env"] }
 dashmap = { version = "6.2" }
 futures = { version = "0.3" }
+http = "1"
+humantime-serde = "1"
 log = "0.4"
 pretty_env_logger = "0.5"
 rand = { version = "0.9" }

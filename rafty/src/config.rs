@@ -4,9 +4,12 @@
 //! *initial* state only: once the cluster is running, membership is owned by the Raft
 //! log (see [`crate::cluster`]) and the file is not consulted again.
 //!
-//! The same file can be mounted into every container; `RAFTY_NODE_ID`,
-//! `RAFTY_LISTEN`, `RAFTY_ADVERTISE`, `RAFTY_BOOTSTRAP` and `RAFTY_CLUSTER_ID`
-//! override the per-node fields when running under Docker Compose.
+//! The struct derives [`serde::Deserialize`] directly, so the YAML shape and the Rust
+//! type cannot drift apart. Durations use `humantime` syntax (`150ms`, `2s`, `1m`) and
+//! addresses are [`NodeAddress`] values.
+//!
+//! Command-line and environment overrides live in the binary (`clap`), not here; see
+//! [`Config::apply_overrides`].
 
 use crate::cluster::{
     ClusterConfiguration, ClusterId, ClusterMember, ClusterMembership, NodeAddress,
@@ -14,10 +17,9 @@ use crate::cluster::{
 use crate::node_state::NodeId;
 use crate::remote_node::{ClusterClient, RemoteNode, RemoteNodeFactory};
 use crate::transport::model::membership::JoinRequest;
-use anyhow::{Context, Result, anyhow, bail};
-use serde::{Deserialize, Deserializer, de};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::env;
+use anyhow::{Context, Result, bail, ensure};
+use serde::Deserialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,30 +29,57 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(150);
 const DEFAULT_ELECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Config {
+    #[serde(default = "default_cluster_id")]
     pub cluster_id: ClusterId,
+    #[serde(rename = "current-node")]
     pub node_id: NodeId,
     pub listen: NodeAddress,
     pub advertise: NodeAddress,
+    #[serde(
+        default = "default_request_timeout",
+        deserialize_with = "humantime_serde::deserialize"
+    )]
     pub request_timeout: Duration,
+    #[serde(
+        default = "default_heartbeat_interval",
+        deserialize_with = "humantime_serde::deserialize"
+    )]
     pub heartbeat_interval: Duration,
+    #[serde(
+        default = "default_election_timeout",
+        deserialize_with = "humantime_serde::deserialize"
+    )]
     pub election_timeout: Duration,
     /// `true` only for the nodes that form the cluster for the first time.
+    #[serde(default)]
     pub bootstrap: bool,
     /// Initial members (or, for a joining node, the seed nodes).
     pub nodes: BTreeMap<NodeId, NodeAddress>,
 }
 
+/// Values that a CLI or environment can override on top of the YAML file.
+#[derive(Debug, Default, Clone)]
+pub struct ConfigOverrides {
+    pub cluster_id: Option<ClusterId>,
+    pub node_id: Option<NodeId>,
+    pub listen: Option<NodeAddress>,
+    pub advertise: Option<NodeAddress>,
+    pub bootstrap: Option<bool>,
+}
+
 impl Config {
     /// Parses and validates a YAML document.
     pub fn from_yaml(yaml: &str) -> Result<Self> {
-        let raw: RawConfig = serde_saphyr::from_str(yaml)
-            .map_err(|error| anyhow!("invalid configuration YAML: {error}"))?;
-        Self::try_from(raw)
+        let Root { config } = serde_saphyr::from_str(yaml)
+            .map_err(|error| anyhow::anyhow!("invalid configuration YAML: {error}"))?;
+        config.validate()?;
+        Ok(config)
     }
 
-    /// Loads a configuration file without applying environment overrides.
+    /// Loads and validates a configuration file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path)
@@ -59,36 +88,22 @@ impl Config {
             .with_context(|| format!("invalid configuration [{}]", path.display()))
     }
 
-    /// Loads a configuration file and applies `RAFTY_*` overrides used by Docker.
-    pub fn load_with_env(path: impl AsRef<Path>) -> Result<Self> {
-        let mut config = Self::load(path)?;
-        config.apply_env_overrides()?;
-        Ok(config)
-    }
-
-    /// Applies environment overrides, then re-validates the whole configuration.
-    pub fn apply_env_overrides(&mut self) -> Result<()> {
-        if let Some(value) = env::var_os("RAFTY_NODE_ID") {
-            self.node_id = NodeId::new(value.to_string_lossy().trim());
+    /// Applies CLI/environment overrides, then re-validates the whole configuration.
+    pub fn apply_overrides(&mut self, overrides: ConfigOverrides) -> Result<()> {
+        if let Some(cluster_id) = overrides.cluster_id {
+            self.cluster_id = cluster_id;
         }
-        if let Some(value) = env::var_os("RAFTY_LISTEN") {
-            self.listen = value
-                .to_string_lossy()
-                .parse()
-                .context("invalid RAFTY_LISTEN")?;
+        if let Some(node_id) = overrides.node_id {
+            self.node_id = node_id;
         }
-        if let Some(value) = env::var_os("RAFTY_ADVERTISE") {
-            self.advertise = value
-                .to_string_lossy()
-                .parse()
-                .context("invalid RAFTY_ADVERTISE")?;
+        if let Some(listen) = overrides.listen {
+            self.listen = listen;
         }
-        if let Some(value) = env::var_os("RAFTY_BOOTSTRAP") {
-            self.bootstrap = parse_bool(&value.to_string_lossy())
-                .context("invalid RAFTY_BOOTSTRAP: expected true or false")?;
+        if let Some(advertise) = overrides.advertise {
+            self.advertise = advertise;
         }
-        if let Some(value) = env::var_os("RAFTY_CLUSTER_ID") {
-            self.cluster_id = ClusterId::new(value.to_string_lossy().to_string())?;
+        if let Some(bootstrap) = overrides.bootstrap {
+            self.bootstrap = bootstrap;
         }
         self.validate()
     }
@@ -165,42 +180,41 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.node_id.as_str().trim().is_empty() {
-            bail!("current-node must not be empty");
-        }
-        if !self.listen.is_dialable() {
-            bail!(
-                "listen address [{}] must include a non-zero port",
-                self.listen
-            );
-        }
-        if !self.advertise.is_dialable() {
-            bail!(
-                "advertise address [{}] must include a non-zero port",
-                self.advertise
-            );
-        }
-        if self.advertise.host() == "0.0.0.0" || self.advertise.host() == "::" {
-            bail!(
-                "advertise address [{}] is a wildcard; other nodes cannot dial it",
-                self.advertise
-            );
-        }
-        if self.nodes.is_empty() {
-            bail!("at least one node must be configured");
-        }
+        ensure!(
+            !self.node_id.as_str().trim().is_empty(),
+            "current-node must not be empty"
+        );
+        ensure!(
+            self.listen.is_dialable(),
+            "listen address [{}] must include a non-zero port",
+            self.listen
+        );
+        ensure!(
+            self.advertise.is_dialable(),
+            "advertise address [{}] must include a non-zero port",
+            self.advertise
+        );
+        ensure!(
+            !matches!(self.advertise.host(), "0.0.0.0" | "::"),
+            "advertise address [{}] is a wildcard; other nodes cannot dial it",
+            self.advertise
+        );
+        ensure!(
+            !self.nodes.is_empty(),
+            "at least one node must be configured"
+        );
 
-        let mut addresses = BTreeSet::new();
+        let mut addresses = HashSet::new();
         for (id, address) in &self.nodes {
-            if id.as_str().trim().is_empty() {
-                bail!("node id must not be empty");
-            }
-            if !address.is_dialable() {
-                bail!("node [{id}] has a non-dialable address [{address}]");
-            }
-            if !addresses.insert(address.clone()) {
-                bail!("duplicate node address [{address}]");
-            }
+            ensure!(!id.as_str().trim().is_empty(), "node id must not be empty");
+            ensure!(
+                address.is_dialable(),
+                "node [{id}] has a non-dialable address [{address}]"
+            );
+            ensure!(
+                addresses.insert(address.clone()),
+                "duplicate node address [{address}]"
+            );
         }
 
         match self.nodes.get(&self.node_id) {
@@ -221,94 +235,33 @@ impl Config {
             _ => {}
         }
 
-        if self.heartbeat_interval.is_zero() {
-            bail!("heartbeat-interval must be greater than zero");
-        }
-        if self.election_timeout <= self.heartbeat_interval {
-            bail!(
-                "election-timeout [{:?}] must be greater than heartbeat-interval [{:?}]",
-                self.election_timeout,
-                self.heartbeat_interval
-            );
-        }
-        if self.request_timeout.is_zero() {
-            bail!("request-timeout must be greater than zero");
-        }
+        ensure!(
+            !self.heartbeat_interval.is_zero(),
+            "heartbeat-interval must be greater than zero"
+        );
+        ensure!(
+            self.election_timeout > self.heartbeat_interval,
+            "election-timeout [{:?}] must be greater than heartbeat-interval [{:?}]",
+            self.election_timeout,
+            self.heartbeat_interval
+        );
+        ensure!(
+            !self.request_timeout.is_zero(),
+            "request-timeout must be greater than zero"
+        );
         Ok(())
     }
 }
 
-#[derive(Debug, Deserialize)]
+/// The YAML document has a single top-level `config` key.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawConfig {
-    config: RawNodeConfig,
+struct Root {
+    config: Config,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-struct RawNodeConfig {
-    #[serde(default = "default_cluster_id")]
-    cluster_id: String,
-    current_node: String,
-    listen: NodeAddress,
-    advertise: NodeAddress,
-    #[serde(
-        default = "default_request_timeout",
-        deserialize_with = "deserialize_duration"
-    )]
-    request_timeout: Duration,
-    #[serde(
-        default = "default_heartbeat_interval",
-        deserialize_with = "deserialize_duration"
-    )]
-    heartbeat_interval: Duration,
-    #[serde(
-        default = "default_election_timeout",
-        deserialize_with = "deserialize_duration"
-    )]
-    election_timeout: Duration,
-    #[serde(default)]
-    bootstrap: bool,
-    nodes: Vec<BTreeMap<String, NodeAddress>>,
-}
-
-impl TryFrom<RawConfig> for Config {
-    type Error = anyhow::Error;
-
-    fn try_from(raw: RawConfig) -> Result<Self> {
-        let config = raw.config;
-        let cluster_id = ClusterId::new(config.cluster_id)?;
-
-        let mut nodes = BTreeMap::new();
-        for entry in config.nodes {
-            if entry.len() != 1 {
-                bail!("each nodes entry must contain exactly one node id");
-            }
-            for (id, address) in entry {
-                if nodes.insert(NodeId::new(id.trim()), address).is_some() {
-                    bail!("duplicate node id [{id}] in nodes list");
-                }
-            }
-        }
-
-        let config = Self {
-            cluster_id,
-            node_id: NodeId::new(config.current_node.trim()),
-            listen: config.listen,
-            advertise: config.advertise,
-            request_timeout: config.request_timeout,
-            heartbeat_interval: config.heartbeat_interval,
-            election_timeout: config.election_timeout,
-            bootstrap: config.bootstrap,
-            nodes,
-        };
-        config.validate()?;
-        Ok(config)
-    }
-}
-
-fn default_cluster_id() -> String {
-    DEFAULT_CLUSTER_ID.to_owned()
+fn default_cluster_id() -> ClusterId {
+    ClusterId::new(DEFAULT_CLUSTER_ID).expect("static cluster id is valid")
 }
 
 fn default_request_timeout() -> Duration {
@@ -321,58 +274,6 @@ fn default_heartbeat_interval() -> Duration {
 
 fn default_election_timeout() -> Duration {
     DEFAULT_ELECTION_TIMEOUT
-}
-
-fn parse_bool(value: &str) -> Result<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => Ok(true),
-        "false" | "0" | "no" | "off" => Ok(false),
-        other => bail!("invalid boolean [{other}]"),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DurationRepr {
-    Text(String),
-    Millis(u64),
-}
-
-fn deserialize_duration<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match DurationRepr::deserialize(deserializer)? {
-        DurationRepr::Text(value) => parse_duration(&value).map_err(de::Error::custom),
-        DurationRepr::Millis(millis) => Ok(Duration::from_millis(millis)),
-    }
-}
-
-/// Parses `150ms`, `2s`, `1m`, `1h` and bare numbers interpreted as milliseconds.
-pub fn parse_duration(value: &str) -> Result<Duration> {
-    let value = value.trim();
-    if value.is_empty() {
-        bail!("duration must not be empty");
-    }
-    let split = value
-        .find(|character: char| !character.is_ascii_digit() && character != '.')
-        .unwrap_or(value.len());
-    let (number, unit) = value.split_at(split);
-    let number: f64 = number
-        .parse()
-        .map_err(|_| anyhow!("invalid duration [{value}]: expected a number"))?;
-    if !number.is_finite() || number <= 0.0 {
-        bail!("invalid duration [{value}]: must be positive");
-    }
-    let millis = match unit.trim() {
-        "" | "ms" => number,
-        "us" => number / 1_000.0,
-        "s" => number * 1_000.0,
-        "m" => number * 60_000.0,
-        "h" => number * 3_600_000.0,
-        other => bail!("invalid duration [{value}]: unknown unit [{other}]"),
-    };
-    Ok(Duration::from_secs_f64(millis / 1_000.0))
 }
 
 #[cfg(test)]
@@ -409,7 +310,7 @@ mod tests {
         assert_eq!(config.seed_ids().len(), 3);
         assert_eq!(config.initial_configuration().unwrap().voter_count(), 0);
 
-        let client = config.cluster_client(Default::default(), None).unwrap();
+        let client = config.cluster_client(HashMap::new(), None).unwrap();
         assert_eq!(client.configuration().index, 0);
         assert_eq!(client.configuration().voter_count(), 0);
     }
@@ -417,7 +318,7 @@ mod tests {
     #[test]
     fn bootstrap_configuration_builds_a_client_with_all_voters() {
         let config = Config::from_yaml(REFERENCE).unwrap();
-        let client = config.cluster_client(Default::default(), None).unwrap();
+        let client = config.cluster_client(HashMap::new(), None).unwrap();
 
         assert_eq!(client.configuration().voter_count(), 3);
         assert_eq!(client.configuration().quorum_size(), 2);
@@ -437,8 +338,8 @@ config:
   election-timeout: 1s
   bootstrap: true
   nodes:
-    - node1: node1:1001
-    - node2: "node2:1002"
+    node1: node1:1001
+    node2: "node2:1002"
 "#;
         let config = Config::from_yaml(yaml).unwrap();
 
@@ -459,8 +360,8 @@ config:
   advertise: node1:1001
   bootstrap: true
   nodes:
-    - node1: node1:1001
-    - node2: node1:1001
+    node1: node1:1001
+    node2: node1:1001
 "#;
         let error = Config::from_yaml(yaml).unwrap_err();
         assert!(error.to_string().contains("duplicate node address"));
@@ -476,7 +377,7 @@ config:
   advertise: node9:1009
   bootstrap: true
   nodes:
-    - node1: node1:1001
+    node1: node1:1001
 "#;
         assert!(Config::from_yaml(yaml).is_err());
     }
@@ -491,8 +392,8 @@ config:
   advertise: node4:1004
   bootstrap: false
   nodes:
-    - node1: node1:1001
-    - node2: node2:1002
+    node1: node1:1001
+    node2: node2:1002
 "#;
         let config = Config::from_yaml(yaml).unwrap();
 
@@ -517,7 +418,7 @@ config:
   advertise: 0.0.0.0:1001
   bootstrap: true
   nodes:
-    - node1: 0.0.0.0:1001
+    node1: 0.0.0.0:1001
 "#;
         let error = Config::from_yaml(yaml).unwrap_err();
         assert!(error.to_string().contains("wildcard"));
@@ -535,18 +436,39 @@ config:
   election-timeout: 500ms
   bootstrap: true
   nodes:
-    - node1: node1:1001
+    node1: node1:1001
 "#;
         assert!(Config::from_yaml(yaml).is_err());
     }
 
     #[test]
-    fn parses_duration_units() {
-        assert_eq!(parse_duration("150ms").unwrap(), Duration::from_millis(150));
-        assert_eq!(parse_duration("2s").unwrap(), Duration::from_secs(2));
-        assert_eq!(parse_duration("1m").unwrap(), Duration::from_secs(60));
-        assert_eq!(parse_duration("250").unwrap(), Duration::from_millis(250));
-        assert!(parse_duration("2fortnights").is_err());
-        assert!(parse_duration("0s").is_err());
+    fn an_invalid_duration_is_reported() {
+        let yaml = r#"
+config:
+  cluster-id: demo
+  current-node: node1
+  listen: 0.0.0.0:1001
+  advertise: node1:1001
+  request-timeout: two seconds
+  nodes:
+    node1: node1:1001
+"#;
+        assert!(Config::from_yaml(yaml).is_err());
+    }
+
+    #[test]
+    fn overrides_are_applied_before_validation() {
+        let mut config = Config::from_yaml(REFERENCE).unwrap();
+        config
+            .apply_overrides(ConfigOverrides {
+                node_id: Some(NodeId::new("node2")),
+                advertise: Some("node2:1002".parse().unwrap()),
+                listen: Some("0.0.0.0:1002".parse().unwrap()),
+                ..ConfigOverrides::default()
+            })
+            .unwrap();
+
+        assert_eq!(config.node_id, NodeId::new("node2"));
+        assert_eq!(config.advertise.to_string(), "node2:1002");
     }
 }

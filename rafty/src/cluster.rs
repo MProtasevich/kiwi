@@ -15,8 +15,9 @@
 use crate::node_state::NodeId;
 use anyhow::{Result, anyhow, bail};
 use arc_swap::ArcSwap;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
-use std::collections::{BTreeMap, BTreeSet};
+use http::uri::Authority;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Debug, Display, Formatter};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,8 @@ use std::sync::{Arc, Mutex};
 /// A node refuses to join, or to apply a configuration from, a different cluster.
 /// This is what stops a restarted node with an empty data directory from silently
 /// forming a second cluster that later merges with the first one.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct ClusterId(Arc<str>);
 
 impl ClusterId {
@@ -58,73 +60,70 @@ impl FromStr for ClusterId {
     }
 }
 
-impl Serialize for ClusterId {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
+impl TryFrom<String> for ClusterId {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(value)
     }
 }
 
-impl<'de> Deserialize<'de> for ClusterId {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        Self::new(value).map_err(de::Error::custom)
+impl From<ClusterId> for String {
+    fn from(value: ClusterId) -> Self {
+        value.as_str().to_owned()
     }
 }
 
 /// A dialable `host:port` pair.
 ///
-/// Serialized as a string (`"node2:1002"`), but accepted from YAML as either that
-/// string or a `{ host, port }` map. Prefer DNS/service names over IP addresses so that
-/// a container can be recreated without invalidating the rest of the cluster.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct NodeAddress {
-    host: String,
-    port: u16,
-}
+/// This wraps [`http::uri::Authority`] instead of hand-rolling a parser: the URI
+/// authority grammar already covers DNS names, IPv4 and bracketed IPv6. It is
+/// serialized as a string (`"node2:1002"`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct NodeAddress(Authority);
 
 impl NodeAddress {
-    pub fn new(host: impl Into<String>, port: u16) -> Result<Self> {
-        let host = host.into();
-        let host = host.trim();
+    pub fn new(host: impl AsRef<str>, port: u16) -> Result<Self> {
+        let host = host.as_ref().trim();
         if host.is_empty() {
             bail!("node address host must not be empty");
         }
-        Ok(Self {
-            host: host.to_owned(),
-            port,
-        })
+        let rendered = if host.contains(':') && !host.starts_with('[') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        };
+        rendered.parse()
     }
 
     /// Address used by in-process clients that do not dial a socket.
     pub fn placeholder(id: &NodeId) -> Self {
-        Self {
-            host: id.as_str().to_owned(),
-            port: 0,
-        }
+        Self::new(id.as_str(), 0).expect("node ids are valid authority hosts")
     }
 
     pub fn host(&self) -> &str {
-        &self.host
+        let host = self.0.host();
+        host.strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host)
     }
 
     pub fn port(&self) -> u16 {
-        self.port
+        self.0
+            .port_u16()
+            .expect("a NodeAddress always contains a port")
     }
 
     /// A wildcard listen address (`0.0.0.0:1001`) is not a valid advertised address.
     pub fn is_dialable(&self) -> bool {
-        self.port != 0
+        self.port() != 0
     }
 }
 
 impl Display for NodeAddress {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        // Bracket IPv6 literals so that `host:port` stays unambiguous.
-        if self.host.contains(':') && !self.host.starts_with('[') {
-            write!(formatter, "[{}]:{}", self.host, self.port)
-        } else {
-            write!(formatter, "{}:{}", self.host, self.port)
-        }
+        Display::fmt(&self.0, formatter)
     }
 }
 
@@ -133,48 +132,30 @@ impl FromStr for NodeAddress {
 
     fn from_str(value: &str) -> Result<Self> {
         let value = value.trim();
-        let (host, port) = if let Some(rest) = value.strip_prefix('[') {
-            let (host, rest) = rest
-                .split_once(']')
-                .ok_or_else(|| anyhow!("invalid IPv6 address [{value}]: missing ']'"))?;
-            let port = rest
-                .strip_prefix(':')
-                .ok_or_else(|| anyhow!("invalid address [{value}]: missing port"))?;
-            (host, port)
-        } else {
-            value
-                .rsplit_once(':')
-                .ok_or_else(|| anyhow!("invalid address [{value}]: expected host:port"))?
-        };
-        let port: u16 = port
+        let authority: Authority = value
             .parse()
-            .map_err(|_| anyhow!("invalid port in address [{value}]"))?;
-        if port == 0 {
-            bail!("invalid address [{value}]: port must not be zero");
+            .map_err(|error| anyhow!("invalid node address [{value}]: {error}"))?;
+        if authority.host().is_empty() {
+            bail!("invalid node address [{value}]: host must not be empty");
         }
-        Self::new(host, port)
+        if authority.port_u16().is_none() {
+            bail!("invalid node address [{value}]: expected host:port");
+        }
+        Ok(Self(authority))
     }
 }
 
-impl Serialize for NodeAddress {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.to_string())
+impl TryFrom<String> for NodeAddress {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        value.parse()
     }
 }
 
-impl<'de> Deserialize<'de> for NodeAddress {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Repr {
-            Text(String),
-            Map { host: String, port: u16 },
-        }
-
-        match Repr::deserialize(deserializer)? {
-            Repr::Text(text) => text.parse().map_err(de::Error::custom),
-            Repr::Map { host, port } => Self::new(host, port).map_err(de::Error::custom),
-        }
+impl From<NodeAddress> for String {
+    fn from(value: NodeAddress) -> Self {
+        value.to_string()
     }
 }
 
@@ -183,16 +164,6 @@ impl<'de> Deserialize<'de> for NodeAddress {
 pub enum MemberRole {
     Voter,
     Learner,
-}
-
-impl MemberRole {
-    pub fn is_voter(self) -> bool {
-        matches!(self, Self::Voter)
-    }
-
-    pub fn is_learner(self) -> bool {
-        matches!(self, Self::Learner)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,11 +191,11 @@ impl ClusterMember {
     }
 
     pub fn is_voter(&self) -> bool {
-        self.role.is_voter()
+        self.role == MemberRole::Voter
     }
 
     pub fn is_learner(&self) -> bool {
-        self.role.is_learner()
+        self.role == MemberRole::Learner
     }
 }
 
@@ -261,7 +232,7 @@ impl ClusterConfiguration {
     }
 
     pub fn validate(&self) -> Result<()> {
-        let mut addresses = BTreeSet::new();
+        let mut addresses = HashSet::with_capacity(self.members.len());
         for (id, member) in &self.members {
             if id != &member.id {
                 bail!("member key [{id}] does not match member id [{}]", member.id);
@@ -712,18 +683,25 @@ mod tests {
     }
 
     #[test]
-    fn node_address_accepts_strings_and_maps() {
-        #[derive(Deserialize)]
-        struct Holder {
-            address: NodeAddress,
-        }
+    fn node_address_round_trips_and_supports_ipv6() {
+        let address: NodeAddress = "node2:1002".parse().unwrap();
 
-        let from_text: Holder = serde_saphyr::from_str("address: node2:1002").unwrap();
-        let from_map: Holder =
-            serde_saphyr::from_str("address:\n  host: node2\n  port: 1002").unwrap();
+        assert_eq!(address.to_string(), "node2:1002");
+        assert_eq!(address.host(), "node2");
+        assert_eq!(address.port(), 1002);
 
-        assert_eq!(from_text.address, address("node2:1002"));
-        assert_eq!(from_map.address, address("node2:1002"));
-        assert_eq!(from_text.address.to_string(), "node2:1002");
+        let json = serde_json::to_string(&address).unwrap();
+        assert_eq!(json, "\"node2:1002\"");
+        assert_eq!(serde_json::from_str::<NodeAddress>(&json).unwrap(), address);
+
+        let ipv6: NodeAddress = "[::1]:1001".parse().unwrap();
+        assert_eq!(ipv6.host(), "::1");
+        assert_eq!(ipv6.port(), 1001);
+        assert_eq!(ipv6.to_string(), "[::1]:1001");
+
+        assert!(
+            "node2".parse::<NodeAddress>().is_err(),
+            "a port is required"
+        );
     }
 }

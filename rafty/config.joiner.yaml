@@ -14,12 +14,6 @@ config:
   election-timeout: 1s
   bootstrap: false
   nodes:
-    - node1:
-        host: node1
-        port: 1001
-    - node2:
-        host: node2
-        port: 1002
-    - node3:
-        host: node3
-        port: 1003
+    node1: "node1:1001"
+    node2: "node2:1002"
+    node3: "node3:1003"
